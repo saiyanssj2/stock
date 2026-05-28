@@ -1,0 +1,8 @@
+streamlit
+vnstock
+ta
+plotly
+pandas
+feedparser
+yfinance
+google-generativeai
