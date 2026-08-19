@@ -19,12 +19,13 @@ Key features:
 import logging
 import time
 from dataclasses import dataclass, field
-from typing import List, Optional, Tuple
+from typing import Callable, List, Optional, Tuple, Union
 
 import numpy as np
 
 from engine.config import (
     Action,
+    ConfigError,
     DecisionReport,
     EngineConfig,
     EngineError,
@@ -99,6 +100,17 @@ class SearchResult:
 
 
 # ==============================================================================
+# Extended Search Data Types (imported from engine.extended_search)
+# ==============================================================================
+
+from engine.extended_search import (  # noqa: E402
+    ExtendedDecisionReport,
+    ExtendedSearchConfig,
+    ExtendedSearchProgress,
+)
+
+
+# ==============================================================================
 # SearchModule
 # ==============================================================================
 
@@ -138,6 +150,9 @@ class SearchModule:
         self._nodes_evaluated: int = 0
         self._timed_out: bool = False
 
+        # Extended search state
+        self._cancel_requested: bool = False
+
     @property
     def config(self) -> SearchConfig:
         """Current search configuration."""
@@ -171,6 +186,8 @@ class SearchModule:
         EngineError
             If the model manager has no loaded model.
         """
+        from engine.search_module_impl import minimax, get_branching_factor, is_timed_out
+
         # Determine search depth
         if depth is None:
             search_depth = self._config.default_depth
@@ -305,9 +322,7 @@ class SearchModule:
     ) -> float:
         """Recursive minimax with alpha-beta pruning.
 
-        At leaf nodes (depth == 0), evaluates the state using the model.
-        At internal nodes, alternates between maximizing (trader) and
-        minimizing (market) levels.
+        Delegates to the implementation in search_module_impl.
 
         Parameters
         ----------
@@ -331,108 +346,15 @@ class SearchModule:
         float
             The minimax score for this subtree.
         """
-        # Check timeout
-        if self._is_timed_out():
-            self._timed_out = True
-            # Return current evaluation as best estimate
-            return self._evaluate_leaf(state)
-
-        # Leaf node: evaluate with model
-        if depth <= 0:
-            return self._evaluate_leaf(state)
-
-        if is_maximizing:
-            # Trader's turn: choose best action
-            max_eval = -float("inf")
-            actions = [Action.BUY, Action.HOLD, Action.SELL]
-
-            for action in actions:
-                if self._is_timed_out():
-                    self._timed_out = True
-                    break
-
-                # Generate scenarios for this action
-                num_scenarios = self._get_branching_factor(current_depth, max_depth)
-                try:
-                    scenarios = self._scenario_generator.generate(
-                        state, action, num_scenarios=num_scenarios
-                    )
-                except EngineError:
-                    continue
-
-                # Market responds (minimizing over scenarios)
-                for scenario_state in scenarios:
-                    if self._is_timed_out():
-                        self._timed_out = True
-                        break
-
-                    eval_score = self._minimax(
-                        state=scenario_state,
-                        depth=depth - 1,
-                        alpha=alpha,
-                        beta=beta,
-                        is_maximizing=False,
-                        current_depth=current_depth + 1,
-                        max_depth=max_depth,
-                    )
-                    max_eval = max(max_eval, eval_score)
-                    alpha = max(alpha, eval_score)
-                    if beta <= alpha:
-                        break  # Beta cutoff
-
-                if beta <= alpha:
-                    break  # Prune remaining actions
-
-            return max_eval if max_eval != -float("inf") else 0.0
-
-        else:
-            # Market's turn: assume worst-case for trader
-            min_eval = float("inf")
-            actions = [Action.BUY, Action.HOLD, Action.SELL]
-
-            for action in actions:
-                if self._is_timed_out():
-                    self._timed_out = True
-                    break
-
-                # Generate scenarios for this action (market movement)
-                num_scenarios = self._get_branching_factor(current_depth, max_depth)
-                try:
-                    scenarios = self._scenario_generator.generate(
-                        state, action, num_scenarios=num_scenarios
-                    )
-                except EngineError:
-                    continue
-
-                for scenario_state in scenarios:
-                    if self._is_timed_out():
-                        self._timed_out = True
-                        break
-
-                    eval_score = self._minimax(
-                        state=scenario_state,
-                        depth=depth - 1,
-                        alpha=alpha,
-                        beta=beta,
-                        is_maximizing=True,
-                        current_depth=current_depth + 1,
-                        max_depth=max_depth,
-                    )
-                    min_eval = min(min_eval, eval_score)
-                    beta = min(beta, eval_score)
-                    if beta <= alpha:
-                        break  # Alpha cutoff
-
-                if beta <= alpha:
-                    break  # Prune remaining actions
-
-            return min_eval if min_eval != float("inf") else 0.0
+        from engine.search_module_impl import minimax
+        return minimax(
+            self, state, depth, alpha, beta, is_maximizing, current_depth, max_depth
+        )
 
     def _evaluate_leaf(self, state: MarketState) -> float:
         """Evaluate a leaf node state using the model manager.
 
-        Converts the MarketState to a feature array and runs inference
-        through the ModelManager.predict() API.
+        Delegates to the implementation in search_module_impl.
 
         Parameters
         ----------
@@ -444,41 +366,13 @@ class SearchModule:
         float
             Position score in [-1, +1].
         """
-        self._nodes_evaluated += 1
-
-        try:
-            # Build feature array: concatenate OHLCV + indicators
-            # Shape: (lookback, num_features)
-            if state.indicators.shape[1] > 0:
-                features = np.concatenate(
-                    [state.ohlcv, state.indicators], axis=1
-                ).astype(np.float32)
-            else:
-                features = state.ohlcv.astype(np.float32)
-
-            # Handle NaN: forward-fill then zero-fill
-            features = _forward_fill_2d(features)
-            features = np.nan_to_num(features, nan=0.0, posinf=0.0, neginf=0.0)
-
-            # Predict: ModelManager expects shape (batch, lookback, num_features)
-            # or (lookback, num_features) for single sample
-            scores = self._model_manager.predict(features)
-
-            # scores shape: (1, 1) → extract scalar
-            score = float(scores.flatten()[0])
-
-            # Clamp to [-1, 1] for safety
-            return max(-1.0, min(1.0, score))
-
-        except Exception as e:
-            logger.warning(f"Leaf evaluation failed: {e}")
-            return 0.0
+        from engine.search_module_impl import evaluate_leaf
+        return evaluate_leaf(self, state)
 
     def _get_branching_factor(self, current_depth: int, max_depth: int) -> int:
         """Determine the number of scenarios to generate at this depth.
 
-        Implements adaptive branching: when depth > adaptive_depth_threshold
-        (default 3), reduces scenarios to maintain the 5-second constraint.
+        Delegates to the implementation in search_module_impl.
 
         Parameters
         ----------
@@ -492,20 +386,8 @@ class SearchModule:
         int
             Number of scenarios to generate (3, 5, or 7).
         """
-        # If max_depth exceeds the adaptive threshold, reduce branching
-        # at deeper levels to maintain time constraint
-        if max_depth > self._config.adaptive_depth_threshold:
-            if current_depth >= self._config.adaptive_depth_threshold:
-                return self._config.adaptive_scenario_count  # 3
-            else:
-                # Even at shallow levels, reduce slightly for deep searches
-                return self._config.default_scenarios  # 5
-        else:
-            # Standard branching at default depth
-            if current_depth >= 2:
-                # Slight reduction at deeper levels even for depth=3
-                return self._config.adaptive_scenario_count  # 3
-            return self._config.default_scenarios  # 5
+        from engine.search_module_impl import get_branching_factor
+        return get_branching_factor(self, current_depth, max_depth)
 
     def _is_timed_out(self) -> bool:
         """Check if the search has exceeded the timeout.
@@ -515,8 +397,479 @@ class SearchModule:
         bool
             True if elapsed time exceeds the configured timeout.
         """
+        from engine.search_module_impl import is_timed_out
+        return is_timed_out(self)
+
+    def cancel_search(self) -> None:
+        """Cancel an ongoing extended search.
+
+        Sets the _cancel_requested flag. The search loop will check this
+        flag and return the best result from the deepest fully completed
+        depth level, equivalent to timeout behavior.
+
+        This method is safe to call from another thread.
+        """
+        self._cancel_requested = True
+
+    def _is_cancelled_or_timed_out(self) -> bool:
+        """Check if search should stop due to cancel or timeout.
+
+        Returns
+        -------
+        bool
+            True if cancel requested or timeout exceeded.
+        """
+        if self._cancel_requested:
+            return True
+        return self._is_timed_out()
+
+    def _get_extended_branching_factor(self, current_depth: int, max_depth: int) -> int:
+        """Determine branching factor for extended search with reduction at deeper levels.
+
+        Implements branching factor reduction: 5 → 4 → 3 as depth increases.
+
+        Parameters
+        ----------
+        current_depth : int
+            Current depth in the search tree.
+        max_depth : int
+            Total maximum search depth.
+
+        Returns
+        -------
+        int
+            Number of scenarios to generate (3, 4, or 5).
+        """
+        if current_depth <= 2:
+            return 5
+        elif current_depth <= 4:
+            return 4
+        else:
+            return 3
+
+    def _run_extended_search(
+        self,
+        state: MarketState,
+        config: ExtendedSearchConfig,
+        progress_callback: Optional[Callable] = None,
+    ) -> "ExtendedDecisionReport":
+        """Run extended search with iterative deepening and cancellation support.
+
+        The extended search process:
+        1. Run standard search (depth 3, 5s timeout) as baseline comparison
+        2. Iteratively deepen from depth 3 up to configured depth
+        3. Report progress via callback at each depth level
+        4. On cancel/timeout: return best from deepest fully completed level
+        5. Build ExtendedDecisionReport with comparison to standard search
+
+        Parameters
+        ----------
+        state : MarketState
+            Current market state to analyze.
+        config : ExtendedSearchConfig
+            Extended search configuration (depth, timeout).
+        progress_callback : callable, optional
+            Function called at each depth level with ExtendedSearchProgress.
+
+        Returns
+        -------
+        ExtendedDecisionReport
+            Extended decision report with comparison to standard search.
+        """
+        from engine.extended_search import (
+            ExtendedDecisionReport,
+            ExtendedSearchProgress,
+        )
+
+        # Reset extended search state
+        self._cancel_requested = False
+        self._start_time = time.time()
+        self._timeout = config.timeout
+        self._nodes_evaluated = 0
+        self._timed_out = False
+
+        # ======================================================================
+        # Step 1: Run standard search (depth 3, 5s) for baseline comparison
+        # ======================================================================
+        standard_result = self._run_standard_baseline(state)
+
+        # Check if we should abort early
+        if self._is_cancelled_or_timed_out():
+            return self._build_extended_report(
+                state=state,
+                best_action=standard_result.best_action,
+                best_score=standard_result.best_score,
+                action_scores=standard_result.action_scores,
+                effective_depth=standard_result.depth_reached,
+                total_nodes=self._nodes_evaluated,
+                elapsed=time.time() - self._start_time,
+                standard_result=standard_result,
+                root_children=standard_result.root_children,
+            )
+
+        # ======================================================================
+        # Step 2: Iterative deepening from depth 3 to configured max depth
+        # ======================================================================
+        best_completed_action = standard_result.best_action
+        best_completed_score = standard_result.best_score
+        best_completed_action_scores = standard_result.action_scores
+        best_completed_depth = standard_result.depth_reached
+        best_completed_root_children = standard_result.root_children
+
+        for depth_level in range(3, config.depth + 1):
+            if self._is_cancelled_or_timed_out():
+                break
+
+            # Report progress at start of each depth level
+            if progress_callback is not None:
+                elapsed = time.time() - self._start_time
+                remaining = self._estimate_remaining_time(
+                    elapsed, depth_level, config.depth
+                )
+                progress = ExtendedSearchProgress(
+                    current_depth=depth_level,
+                    max_depth=config.depth,
+                    nodes_evaluated=self._nodes_evaluated,
+                    elapsed_seconds=elapsed,
+                    estimated_remaining_seconds=remaining,
+                    best_action_so_far=best_completed_action,
+                    best_score_so_far=best_completed_score,
+                )
+                progress_callback(progress)
+
+            # Run search at this depth level
+            depth_result = self._search_at_depth(state, depth_level)
+
+            if depth_result is not None:
+                # This depth level was fully evaluated
+                best_completed_action = depth_result.best_action
+                best_completed_score = depth_result.best_score
+                best_completed_action_scores = depth_result.action_scores
+                best_completed_depth = depth_level
+                best_completed_root_children = depth_result.root_children
+            else:
+                # Search was interrupted at this level — use previous results
+                break
+
+        # ======================================================================
+        # Step 3: Build final ExtendedDecisionReport
+        # ======================================================================
         elapsed = time.time() - self._start_time
-        return elapsed >= self._timeout
+
+        # Final progress report
+        if progress_callback is not None:
+            progress = ExtendedSearchProgress(
+                current_depth=best_completed_depth,
+                max_depth=config.depth,
+                nodes_evaluated=self._nodes_evaluated,
+                elapsed_seconds=elapsed,
+                estimated_remaining_seconds=0.0,
+                best_action_so_far=best_completed_action,
+                best_score_so_far=best_completed_score,
+            )
+            progress_callback(progress)
+
+        return self._build_extended_report(
+            state=state,
+            best_action=best_completed_action,
+            best_score=best_completed_score,
+            action_scores=best_completed_action_scores,
+            effective_depth=best_completed_depth,
+            total_nodes=self._nodes_evaluated,
+            elapsed=elapsed,
+            standard_result=standard_result,
+            root_children=best_completed_root_children,
+        )
+
+    def _run_standard_baseline(self, state: MarketState) -> "SearchResult":
+        """Run standard search (depth 3, 5s) as a baseline for comparison.
+
+        Uses a temporary timeout of 5 seconds and depth 3 regardless of
+        the extended search configuration.
+
+        Parameters
+        ----------
+        state : MarketState
+            Current market state.
+
+        Returns
+        -------
+        SearchResult
+            Standard search result for baseline comparison.
+        """
+        # Save current timeout, temporarily set to standard 5s
+        original_timeout = self._timeout
+        original_start = self._start_time
+
+        self._start_time = time.time()
+        self._timeout = 5.0
+        self._timed_out = False
+
+        result = self.search(state, depth=3)
+
+        # Restore extended timeout settings
+        self._timeout = original_timeout
+        self._start_time = original_start
+        self._timed_out = False
+
+        return result
+
+    def _search_at_depth(
+        self, state: MarketState, depth: int
+    ) -> Optional["SearchResult"]:
+        """Run a single search at a specific depth level for extended search.
+
+        Uses extended branching factor reduction and checks for cancel/timeout.
+        Returns None if the search could not be fully completed at this depth.
+
+        Parameters
+        ----------
+        state : MarketState
+            Current market state.
+        depth : int
+            Depth to search at.
+
+        Returns
+        -------
+        SearchResult or None
+            Complete result if this depth was fully evaluated, None if interrupted.
+        """
+        # Reset per-depth state (but keep cumulative nodes_evaluated)
+        self._timed_out = False
+
+        alpha = -float("inf")
+        beta = float("inf")
+        action_scores: dict = {}
+        best_action = Action.HOLD
+        best_score = -float("inf")
+        root_children: List[SearchNode] = []
+
+        actions = [Action.BUY, Action.HOLD, Action.SELL]
+        all_actions_completed = True
+
+        for action in actions:
+            if self._is_cancelled_or_timed_out():
+                all_actions_completed = False
+                self._timed_out = True
+                break
+
+            # Generate scenarios with extended branching factor
+            num_scenarios = self._get_extended_branching_factor(
+                current_depth=0, max_depth=depth
+            )
+            try:
+                scenarios = self._scenario_generator.generate(
+                    state, action, num_scenarios=num_scenarios
+                )
+            except EngineError as e:
+                logger.warning(
+                    f"Scenario generation failed for {action.value} at depth {depth}: {e}"
+                )
+                action_scores[action] = 0.0
+                action_node = SearchNode(
+                    state=state, action=action, score=0.0, depth=0
+                )
+                root_children.append(action_node)
+                continue
+
+            action_node = SearchNode(state=state, action=action, depth=0)
+
+            # Minimax over scenarios (market is minimizing)
+            min_score = float("inf")
+            action_fully_evaluated = True
+
+            for scenario_state in scenarios:
+                if self._is_cancelled_or_timed_out():
+                    action_fully_evaluated = False
+                    self._timed_out = True
+                    break
+
+                score = self._minimax(
+                    state=scenario_state,
+                    depth=depth - 1,
+                    alpha=alpha,
+                    beta=beta,
+                    is_maximizing=True,
+                    current_depth=1,
+                    max_depth=depth,
+                )
+                min_score = min(min_score, score)
+
+                # Alpha-beta pruning
+                beta = min(beta, min_score)
+                if beta <= alpha:
+                    break
+
+                child_node = SearchNode(
+                    state=scenario_state, score=score, depth=1
+                )
+                action_node.children.append(child_node)
+
+            if not action_fully_evaluated:
+                all_actions_completed = False
+                break
+
+            # The action's score is the worst-case across scenarios
+            action_score = min_score if min_score != float("inf") else 0.0
+            action_scores[action] = action_score
+            action_node.score = action_score
+            root_children.append(action_node)
+
+            if action_score > best_score:
+                best_score = action_score
+                best_action = action
+
+            alpha = max(alpha, best_score)
+
+        if not all_actions_completed:
+            # Depth not fully completed - return None to signal interruption
+            return None
+
+        # If no action was fully evaluated, shouldn't happen since all_actions_completed
+        if not action_scores:
+            return None
+
+        return SearchResult(
+            best_action=best_action,
+            best_score=best_score,
+            action_scores=action_scores,
+            nodes_evaluated=self._nodes_evaluated,
+            depth_reached=depth,
+            timed_out=False,
+            root_children=root_children,
+        )
+
+    def _estimate_remaining_time(
+        self, elapsed: float, current_depth: int, max_depth: int
+    ) -> float:
+        """Estimate remaining search time based on elapsed time and depth progress.
+
+        Uses exponential growth model: each additional depth level takes
+        approximately branching_factor times longer than the previous.
+
+        Parameters
+        ----------
+        elapsed : float
+            Time elapsed so far in seconds.
+        current_depth : int
+            Depth currently being explored.
+        max_depth : int
+            Maximum configured depth.
+
+        Returns
+        -------
+        float
+            Estimated remaining seconds. Returns -1.0 if estimation
+            is not yet available.
+        """
+        if current_depth <= 3 or elapsed < 1.0:
+            return -1.0  # Not enough data to estimate
+
+        # Estimate based on exponential branching
+        # Average branching factor for remaining levels
+        remaining_levels = max_depth - current_depth
+        if remaining_levels <= 0:
+            return 0.0
+
+        # Rough exponential: each depth multiplies time by ~branching factor
+        # Average branching factor across extended search is ~4
+        avg_branching = 4.0
+        time_per_level = elapsed / max(1, current_depth - 2)  # Time per completed level
+        estimated_remaining = 0.0
+        for i in range(remaining_levels):
+            time_per_level *= avg_branching
+            estimated_remaining += time_per_level
+
+        # Cap at remaining timeout
+        remaining_timeout = self._timeout - elapsed
+        return min(estimated_remaining, max(0.0, remaining_timeout))
+
+    def _build_extended_report(
+        self,
+        state: MarketState,
+        best_action: Action,
+        best_score: float,
+        action_scores: dict,
+        effective_depth: int,
+        total_nodes: int,
+        elapsed: float,
+        standard_result: "SearchResult",
+        root_children: List[SearchNode],
+    ) -> "ExtendedDecisionReport":
+        """Build an ExtendedDecisionReport from search results.
+
+        Parameters
+        ----------
+        state : MarketState
+            The market state analyzed.
+        best_action : Action
+            Best action from the extended search.
+        best_score : float
+            Score of the best action.
+        action_scores : dict
+            Mapping of actions to scores.
+        effective_depth : int
+            Deepest fully evaluated depth.
+        total_nodes : int
+            Total leaf nodes evaluated.
+        elapsed : float
+            Total time elapsed.
+        standard_result : SearchResult
+            Standard search result for comparison.
+        root_children : list of SearchNode
+            Root children from the deepest complete search.
+
+        Returns
+        -------
+        ExtendedDecisionReport
+            Complete extended decision report.
+        """
+        from engine.extended_search import ExtendedDecisionReport
+
+        # Compute confidence from the best search result
+        from engine.search_module_impl import compute_confidence
+
+        best_search_result = SearchResult(
+            best_action=best_action,
+            best_score=best_score,
+            action_scores=action_scores,
+            nodes_evaluated=total_nodes,
+            depth_reached=effective_depth,
+            timed_out=False,
+            root_children=root_children,
+        )
+        confidence = compute_confidence(self._config, best_search_result)
+
+        # Compute standard confidence
+        standard_confidence = compute_confidence(self._config, standard_result)
+
+        # Determine if recommendations agree
+        recommendations_agree = best_action == standard_result.best_action
+
+        # Extract top scenarios and indicators using report generator
+        from engine.search_module_impl import (
+            extract_top_scenarios,
+            compute_indicator_contributions,
+        )
+
+        top_scenarios = extract_top_scenarios(self._config, best_search_result)
+        top_indicators = compute_indicator_contributions(self._config, state)
+
+        return ExtendedDecisionReport(
+            symbol=state.symbol,
+            recommended_action=best_action,
+            confidence=confidence,
+            position_score=best_score,
+            top_scenarios=top_scenarios,
+            top_indicators=top_indicators,
+            total_nodes_evaluated=total_nodes,
+            effective_depth_reached=effective_depth,
+            time_elapsed_seconds=elapsed,
+            standard_recommendation=standard_result.best_action,
+            standard_confidence=standard_confidence,
+            standard_position_score=standard_result.best_score,
+            recommendations_agree=recommendations_agree,
+        )
 
 
 # ==============================================================================
@@ -599,26 +952,7 @@ class DecisionReportGenerator:
     def _compute_confidence(self, search_result: SearchResult) -> float:
         """Compute confidence from how much scenarios agree.
 
-        Confidence measures the agreement level among root-level action scores.
-        High confidence means one action clearly dominates; low confidence
-        means actions have similar scores (ambiguous situation).
-
-        The confidence is computed as:
-            confidence = 1.0 - (score_range / max_possible_range)
-
-        Where score_range is the difference between the highest and lowest
-        action scores, and max_possible_range is 2.0 (from -1.0 to +1.0).
-
-        If scores are all the same (perfect agreement on ambiguity), confidence
-        is high (1.0). If scores span the full range, confidence is low (0.0).
-
-        Actually, a better interpretation for "scenario agreement" is:
-        - If all scenarios (within each action) produce similar scores,
-          confidence is HIGH (we're sure about the evaluation).
-        - If scenarios produce widely different scores, confidence is LOW
-          (the outcome is uncertain).
-
-        We compute it as: 1.0 - normalized_variance_of_child_scores.
+        Delegates to the implementation in search_module_impl.
 
         Parameters
         ----------
@@ -630,60 +964,13 @@ class DecisionReportGenerator:
         float
             Confidence in [0.0, 1.0].
         """
-        action_scores = search_result.action_scores
-
-        if not action_scores:
-            return 0.0
-
-        scores = list(action_scores.values())
-
-        if len(scores) <= 1:
-            # Only one action evaluated - low confidence
-            return 0.5
-
-        # Compute the range of action scores
-        score_max = max(scores)
-        score_min = min(scores)
-        score_range = score_max - score_min
-
-        # Max possible range for scores in [-1, 1] is 2.0
-        max_possible_range = 2.0
-
-        # Also consider child score variance for deeper confidence analysis
-        child_scores = []
-        for root_child in search_result.root_children:
-            for child in root_child.children:
-                child_scores.append(child.score)
-
-        if child_scores:
-            # Compute variance of all explored child scores
-            child_arr = np.array(child_scores)
-            child_std = float(np.std(child_arr))
-            # Normalize: max std for [-1, 1] is 1.0
-            normalized_std = min(child_std, 1.0)
-        else:
-            # No child scores available, use action score spread only
-            normalized_std = score_range / max_possible_range
-
-        # Confidence combines both:
-        # - Action score spread (how clearly one action dominates)
-        # - Child score variance (how uncertain the scenarios are)
-        # Lower spread AND lower variance → higher confidence
-        action_agreement = 1.0 - (score_range / max_possible_range)
-        scenario_agreement = 1.0 - normalized_std
-
-        # Weight: scenario agreement is more important as it measures
-        # the actual uncertainty in outcomes
-        confidence = 0.4 * action_agreement + 0.6 * scenario_agreement
-
-        # Clamp to [0, 1]
-        return max(0.0, min(1.0, confidence))
+        from engine.search_module_impl import compute_confidence
+        return compute_confidence(self._config, search_result)
 
     def _extract_top_scenarios(self, search_result: SearchResult) -> List[ScenarioResult]:
         """Extract top N scenarios from root children, sorted by score.
 
-        Each scenario represents an action node from the root level with
-        its best evaluated child path.
+        Delegates to the implementation in search_module_impl.
 
         Parameters
         ----------
@@ -695,57 +982,15 @@ class DecisionReportGenerator:
         List[ScenarioResult]
             Top scenarios (up to top_scenarios_report, default 3).
         """
-        top_n = self._config.top_scenarios_report  # Default 3
-        root_children = search_result.root_children
-
-        if not root_children:
-            return []
-
-        # Build scenario results from root children
-        scenario_results = []
-        for root_child in root_children:
-            if root_child.action is None:
-                continue
-
-            # Build action sequence: the root action + best child path
-            action_sequence = [root_child.action]
-
-            # Find the best child's action sequence (if any)
-            best_child_score = root_child.score
-            if root_child.children:
-                # Sort children by score (descending for the best outcome)
-                sorted_children = sorted(
-                    root_child.children, key=lambda c: c.score, reverse=True
-                )
-                best_child = sorted_children[0]
-                best_child_score = best_child.score
-                # If the child has an action, include it
-                if best_child.action is not None:
-                    action_sequence.append(best_child.action)
-
-            # Generate description
-            description = self._describe_scenario(
-                action_sequence, root_child.score
-            )
-
-            scenario_results.append(
-                ScenarioResult(
-                    action_sequence=action_sequence,
-                    leaf_score=root_child.score,
-                    description=description,
-                )
-            )
-
-        # Sort by absolute leaf_score (most impactful scenarios first)
-        scenario_results.sort(key=lambda s: abs(s.leaf_score), reverse=True)
-
-        # Return top N (or all if fewer available)
-        return scenario_results[:top_n]
+        from engine.search_module_impl import extract_top_scenarios
+        return extract_top_scenarios(self._config, search_result)
 
     def _describe_scenario(
         self, action_sequence: List[Action], score: float
     ) -> str:
         """Generate a human-readable description for a scenario.
+
+        Delegates to the implementation in search_module_impl.
 
         Parameters
         ----------
@@ -759,34 +1004,15 @@ class DecisionReportGenerator:
         str
             Description string.
         """
-        action_names = " → ".join(a.value for a in action_sequence)
-
-        if score > 0.5:
-            outlook = "strongly favorable"
-        elif score > 0.2:
-            outlook = "moderately favorable"
-        elif score > -0.2:
-            outlook = "neutral"
-        elif score > -0.5:
-            outlook = "moderately unfavorable"
-        else:
-            outlook = "strongly unfavorable"
-
-        return f"{action_names}: {outlook} (score: {score:.3f})"
+        from engine.search_module_impl import describe_scenario
+        return describe_scenario(action_sequence, score)
 
     def _compute_indicator_contributions(
         self, state: MarketState
     ) -> List[IndicatorContribution]:
         """Compute top N indicator contributions to the position score.
 
-        Contributions are estimated by analyzing which indicators deviate
-        most from their neutral values (midpoint of their typical range).
-        Indicators with larger absolute deviations from neutral contribute
-        more to the score differentiation.
-
-        For a simple but effective approach, we use the most recent indicator
-        values and compute their z-score-like deviation from the lookback mean,
-        then rank by absolute deviation.
+        Delegates to the implementation in search_module_impl.
 
         Parameters
         ----------
@@ -798,59 +1024,12 @@ class DecisionReportGenerator:
         List[IndicatorContribution]
             Top 5 indicators sorted by absolute contribution (descending).
         """
-        top_n = self._config.top_indicators_report  # Default 5
-
-        if state.indicators.shape[1] == 0:
-            return []
-
-        # Get the most recent indicator values
-        current_values = state.indicators[-1]  # Shape: (num_indicators,)
-
-        # Compute mean and std over the lookback window for each indicator
-        # This gives us a sense of how "unusual" the current value is
-        # Suppress warnings for all-NaN slices (expected for some indicators)
-        import warnings
-        with warnings.catch_warnings():
-            warnings.simplefilter("ignore", category=RuntimeWarning)
-            indicator_means = np.nanmean(state.indicators, axis=0)
-            indicator_stds = np.nanstd(state.indicators, axis=0)
-
-        # Compute contributions (z-score-like deviation)
-        contributions = []
-        for i in range(min(len(INDICATOR_COLUMNS), state.indicators.shape[1])):
-            name = INDICATOR_COLUMNS[i]
-            value = current_values[i]
-
-            if np.isnan(value):
-                continue
-
-            mean_val = indicator_means[i]
-            std_val = indicator_stds[i]
-
-            # Compute contribution as deviation from mean (normalized by std)
-            if np.isnan(mean_val) or np.isnan(std_val) or std_val < 1e-10:
-                # If std is near zero, contribution is minimal
-                contribution = 0.0
-            else:
-                contribution = (value - mean_val) / std_val
-
-            contributions.append(
-                IndicatorContribution(
-                    name=name,
-                    value=float(value),
-                    contribution=float(abs(contribution)),
-                )
-            )
-
-        # Sort by absolute contribution (descending)
-        contributions.sort(key=lambda ic: ic.contribution, reverse=True)
-
-        # Return top N
-        return contributions[:top_n]
+        from engine.search_module_impl import compute_indicator_contributions
+        return compute_indicator_contributions(self._config, state)
 
 
 # ==============================================================================
-# Helper functions
+# Helper functions (public API preserved)
 # ==============================================================================
 
 
@@ -867,18 +1046,5 @@ def _forward_fill_2d(arr: np.ndarray) -> np.ndarray:
     np.ndarray
         Array with NaN forward-filled along axis 0.
     """
-    result = arr.copy()
-    for col in range(result.shape[1]):
-        col_data = result[:, col]
-        mask = np.isnan(col_data)
-        if not mask.any():
-            continue
-        # Forward fill: propagate last valid value
-        last_valid = np.nan
-        for i in range(len(col_data)):
-            if mask[i]:
-                if not np.isnan(last_valid):
-                    result[i, col] = last_valid
-            else:
-                last_valid = col_data[i]
-    return result
+    from engine.search_module_impl import forward_fill_2d
+    return forward_fill_2d(arr)

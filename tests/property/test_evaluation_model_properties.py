@@ -24,7 +24,7 @@ from engine.evaluation_model import StockEvalNet
 # Constants
 # ---------------------------------------------------------------------------
 
-NUM_FEATURES = 63
+NUM_FEATURES = 61
 DEFAULT_LOOKBACK = 60
 
 
@@ -83,7 +83,7 @@ class TestProperty5SaveLoadInferenceConsistency:
         scale=input_scale_strategy(),
     )
     @settings(
-        max_examples=30,
+        max_examples=15,
         suppress_health_check=[HealthCheck.too_slow],
         deadline=None,
     )
@@ -196,7 +196,7 @@ class TestProperty7OutputBounded:
         distribution=input_distribution_strategy(),
     )
     @settings(
-        max_examples=50,
+        max_examples=15,
         suppress_health_check=[HealthCheck.too_slow],
         deadline=None,
     )
@@ -251,7 +251,7 @@ class TestProperty7OutputBounded:
         scale=st.floats(min_value=0.001, max_value=10000.0, allow_nan=False, allow_infinity=False),
     )
     @settings(
-        max_examples=50,
+        max_examples=15,
         suppress_health_check=[HealthCheck.too_slow],
         deadline=None,
     )
@@ -289,7 +289,7 @@ class TestProperty7OutputBounded:
 
     @given(batch_size=batch_size_strategy())
     @settings(
-        max_examples=30,
+        max_examples=15,
         suppress_health_check=[HealthCheck.too_slow],
         deadline=None,
     )

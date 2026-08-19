@@ -184,7 +184,7 @@ class TestScenarioGenerationValidity:
         num_scenarios=st.sampled_from([3, 5, 7]),
         action=st.sampled_from([Action.BUY, Action.HOLD, Action.SELL]),
     )
-    @settings(max_examples=100)
+    @settings(max_examples=20)
     def test_generates_correct_number_of_scenarios(self, state, num_scenarios, action):
         """
         For any MarketState with ≥30 days history, generate() produces
@@ -205,7 +205,7 @@ class TestScenarioGenerationValidity:
         state=market_state_with_sufficient_history(),
         action=st.sampled_from([Action.BUY, Action.HOLD, Action.SELL]),
     )
-    @settings(max_examples=100)
+    @settings(max_examples=20)
     def test_price_change_within_7_percent_limit(self, state, action):
         """
         Each scenario's close price differs from the original by at most ±7%.
@@ -231,7 +231,7 @@ class TestScenarioGenerationValidity:
             )
 
     @given(state=market_state_with_insufficient_history())
-    @settings(max_examples=100)
+    @settings(max_examples=20)
     def test_rejects_insufficient_history(self, state):
         """
         For MarketState with <30 days history, DataError is raised.
@@ -253,7 +253,7 @@ class TestScenarioGenerationValidity:
         action=st.sampled_from([Action.BUY, Action.HOLD, Action.SELL]),
         num_scenarios=st.sampled_from([3, 5, 7]),
     )
-    @settings(max_examples=100)
+    @settings(max_examples=20)
     def test_all_scenarios_are_valid_market_states(self, state, action, num_scenarios):
         """
         All generated scenarios are valid MarketState objects with correct

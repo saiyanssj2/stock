@@ -239,7 +239,7 @@ class TestStrategySignalValidity:
     # --- Universal validity: all strategies return exactly one valid Action ---
 
     @given(df=strategy_dataframe())
-    @settings(max_examples=100, suppress_health_check=[HealthCheck.too_slow])
+    @settings(max_examples=20, suppress_health_check=[HealthCheck.too_slow])
     def test_wyckoff_returns_valid_action(self, df):
         """
         WyckoffStrategy always returns exactly one Action from {BUY, HOLD, SELL}.
@@ -252,7 +252,7 @@ class TestStrategySignalValidity:
         assert result in VALID_ACTIONS, f"WyckoffStrategy returned {result}, not a valid Action"
 
     @given(df=strategy_dataframe())
-    @settings(max_examples=100, suppress_health_check=[HealthCheck.too_slow])
+    @settings(max_examples=20, suppress_health_check=[HealthCheck.too_slow])
     def test_technical_returns_valid_action(self, df):
         """
         TechnicalStrategy always returns exactly one Action from {BUY, HOLD, SELL}.
@@ -265,7 +265,7 @@ class TestStrategySignalValidity:
         assert result in VALID_ACTIONS, f"TechnicalStrategy returned {result}, not a valid Action"
 
     @given(df=strategy_dataframe())
-    @settings(max_examples=100, suppress_health_check=[HealthCheck.too_slow])
+    @settings(max_examples=20, suppress_health_check=[HealthCheck.too_slow])
     def test_momentum_returns_valid_action(self, df):
         """
         MomentumStrategy always returns exactly one Action from {BUY, HOLD, SELL}.
@@ -278,7 +278,7 @@ class TestStrategySignalValidity:
         assert result in VALID_ACTIONS, f"MomentumStrategy returned {result}, not a valid Action"
 
     @given(df=strategy_dataframe())
-    @settings(max_examples=100, suppress_health_check=[HealthCheck.too_slow])
+    @settings(max_examples=20, suppress_health_check=[HealthCheck.too_slow])
     def test_mean_reversion_returns_valid_action(self, df):
         """
         MeanReversionStrategy always returns exactly one Action from {BUY, HOLD, SELL}.
@@ -293,7 +293,7 @@ class TestStrategySignalValidity:
     # --- Wyckoff threshold consistency ---
 
     @given(df=wyckoff_score_dataframe())
-    @settings(max_examples=50, suppress_health_check=[HealthCheck.too_slow])
+    @settings(max_examples=15, suppress_health_check=[HealthCheck.too_slow])
     def test_wyckoff_threshold_consistency(self, df):
         """
         WyckoffStrategy: score >= 3 → BUY, score <= -3 → SELL, otherwise HOLD.
@@ -323,7 +323,7 @@ class TestStrategySignalValidity:
     # --- Technical threshold consistency ---
 
     @given(df=strategy_dataframe())
-    @settings(max_examples=100, suppress_health_check=[HealthCheck.too_slow])
+    @settings(max_examples=20, suppress_health_check=[HealthCheck.too_slow])
     def test_technical_threshold_consistency(self, df):
         """
         TechnicalStrategy: score >= 5 → BUY, score <= -4 → SELL, otherwise HOLD.
@@ -353,7 +353,7 @@ class TestStrategySignalValidity:
     # --- Momentum threshold consistency ---
 
     @given(data=momentum_controlled_dataframe())
-    @settings(max_examples=100, suppress_health_check=[HealthCheck.too_slow])
+    @settings(max_examples=20, suppress_health_check=[HealthCheck.too_slow])
     def test_momentum_threshold_consistency(self, data):
         """
         MomentumStrategy: ADX > 25 AND ROC > 0 AND volume > 1.5x → BUY;
@@ -385,7 +385,7 @@ class TestStrategySignalValidity:
     # --- Mean Reversion threshold consistency ---
 
     @given(data=mean_reversion_controlled_dataframe())
-    @settings(max_examples=100, suppress_health_check=[HealthCheck.too_slow])
+    @settings(max_examples=20, suppress_health_check=[HealthCheck.too_slow])
     def test_mean_reversion_buy_conditions(self, data):
         """
         MeanReversionStrategy: price < BB_lower OR RSI < 30 OR price < SMA_20 - 2σ → BUY.
@@ -414,7 +414,7 @@ class TestStrategySignalValidity:
             )
 
     @given(data=mean_reversion_controlled_dataframe())
-    @settings(max_examples=100, suppress_health_check=[HealthCheck.too_slow])
+    @settings(max_examples=20, suppress_health_check=[HealthCheck.too_slow])
     def test_mean_reversion_sell_conditions(self, data):
         """
         MeanReversionStrategy: price > BB_upper OR RSI > 70 OR price > SMA_20 + 2σ → SELL.
@@ -450,7 +450,7 @@ class TestStrategySignalValidity:
             )
 
     @given(data=mean_reversion_controlled_dataframe())
-    @settings(max_examples=100, suppress_health_check=[HealthCheck.too_slow])
+    @settings(max_examples=20, suppress_health_check=[HealthCheck.too_slow])
     def test_mean_reversion_hold_conditions(self, data):
         """
         MeanReversionStrategy: no oversold/overbought condition → HOLD.

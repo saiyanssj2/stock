@@ -1,0 +1,21 @@
+{
+  "cycle_number": 1,
+  "timestamp": "2026-06-11T13:15:22.700706",
+  "sl_val_loss": 0.1475711464881897,
+  "sl_epochs": 6,
+  "rl_avg_return": 3.01,
+  "rl_best_return": 176.17,
+  "rl_episodes": 50,
+  "backtest_return_pct": 139.2,
+  "backtest_sharpe": 0.428,
+  "backtest_win_rate_pct": 44.4,
+  "backtest_trades": 250,
+  "symbols": [
+    "ACB",
+    "ACV",
+    "BCM",
+    "BID",
+    "BSR"
+  ],
+  "duration_seconds": 49.1
+}

@@ -37,21 +37,7 @@ class Strategy(Protocol):
     """Protocol for trading strategies that generate signals."""
 
     def generate_signal(self, df: pd.DataFrame, index: int) -> Action:
-        """
-        Generate a trading signal for the given row index.
-
-        Parameters
-        ----------
-        df : pd.DataFrame
-            Full historical DataFrame with OHLCV and indicators.
-        index : int
-            Current row index to evaluate.
-
-        Returns
-        -------
-        Action
-            BUY, HOLD, or SELL signal.
-        """
+        """Generate a trading signal (BUY/HOLD/SELL) for the given row index."""
         ...
 
 
@@ -114,6 +100,9 @@ class BacktestEngine:
         # T+2.5 rounds up to 3 full trading days before selling is allowed
         self.settlement_days = math.ceil(config.settlement_days)
         self.config = config
+        # Price in CSV is in units of 1000 VND (e.g., 76.5 = 76,500 VND).
+        # Multiply by this factor to get actual VND for capital calculations.
+        self.price_scale = getattr(config, "price_scale", 1000.0)
 
     def run(
         self,
@@ -164,12 +153,13 @@ class BacktestEngine:
         for day_idx in range(len(df_period)):
             row = df_period.iloc[day_idx]
             current_price = float(row["close"])
+            current_price_vnd = current_price * self.price_scale
             current_date = self._get_date(df_period, day_idx)
 
             # Calculate current portfolio value
             portfolio_value = cash
             if position is not None:
-                portfolio_value += position.shares * current_price
+                portfolio_value += position.shares * current_price_vnd
 
             # Record equity curve
             equity_values.append(portfolio_value)
@@ -194,15 +184,15 @@ class BacktestEngine:
 
                 # Calculate position size respecting 20% max and lot size
                 max_investment = portfolio_value * self.max_position_pct
-                max_shares_by_capital = int(cash // current_price)
-                max_shares_by_position = int(max_investment // current_price)
+                max_shares_by_capital = int(cash // current_price_vnd)
+                max_shares_by_position = int(max_investment // current_price_vnd)
                 shares = min(max_shares_by_capital, max_shares_by_position)
 
                 # Round down to lot size
                 shares = (shares // self.lot_size) * self.lot_size
 
                 if shares >= self.lot_size:
-                    cost = shares * current_price
+                    cost = shares * current_price_vnd
                     cash -= cost
                     position = _Position(
                         entry_date=current_date,
@@ -222,10 +212,11 @@ class BacktestEngine:
                     continue
 
                 # Execute sell
-                revenue = position.shares * current_price
+                revenue = position.shares * current_price_vnd
                 cash += revenue
 
-                pnl = revenue - (position.shares * position.entry_price)
+                entry_price_vnd = position.entry_price * self.price_scale
+                pnl = revenue - (position.shares * entry_price_vnd)
                 pnl_pct = (
                     (current_price - position.entry_price) / position.entry_price
                 ) * 100.0
@@ -365,12 +356,13 @@ class BacktestEngine:
         for day_idx in range(len(df_period)):
             row = df_period.iloc[day_idx]
             current_price = float(row["close"])
+            current_price_vnd = current_price * self.price_scale
             current_date = self._get_date(df_period, day_idx)
 
             # Calculate current portfolio value
             portfolio_value = cash
             if position is not None:
-                portfolio_value += position.shares * current_price
+                portfolio_value += position.shares * current_price_vnd
 
             # Record equity curve
             equity_values.append(portfolio_value)
@@ -398,13 +390,13 @@ class BacktestEngine:
                     continue
 
                 max_investment = portfolio_value * self.max_position_pct
-                max_shares_by_capital = int(cash // current_price)
-                max_shares_by_position = int(max_investment // current_price)
+                max_shares_by_capital = int(cash // current_price_vnd)
+                max_shares_by_position = int(max_investment // current_price_vnd)
                 shares = min(max_shares_by_capital, max_shares_by_position)
                 shares = (shares // self.lot_size) * self.lot_size
 
                 if shares >= self.lot_size:
-                    cost = shares * current_price
+                    cost = shares * current_price_vnd
                     cash -= cost
                     position = _Position(
                         entry_date=current_date,
@@ -421,10 +413,11 @@ class BacktestEngine:
                 if not self._is_within_price_limit(current_price, ref_price):
                     continue
 
-                revenue = position.shares * current_price
+                revenue = position.shares * current_price_vnd
                 cash += revenue
 
-                pnl = revenue - (position.shares * position.entry_price)
+                entry_price_vnd = position.entry_price * self.price_scale
+                pnl = revenue - (position.shares * entry_price_vnd)
                 pnl_pct = (
                     (current_price - position.entry_price) / position.entry_price
                 ) * 100.0
@@ -559,21 +552,7 @@ class BacktestEngine:
     def _is_within_price_limit(
         self, executed_price: float, reference_price: float
     ) -> bool:
-        """
-        Check if the executed price is within ±7% of the reference price.
-
-        Parameters
-        ----------
-        executed_price : float
-            The price at which the trade would execute.
-        reference_price : float
-            The previous session's closing price (reference).
-
-        Returns
-        -------
-        bool
-            True if the price is within limits.
-        """
+        """Check if executed_price is within ±7% of reference_price."""
         if reference_price <= 0:
             return False
         change_pct = abs(executed_price - reference_price) / reference_price
@@ -655,16 +634,7 @@ class BacktestEngine:
         }
 
     def _compute_max_drawdown(self, equity_curve: pd.Series) -> float:
-        """
-        Compute maximum drawdown as a percentage.
-
-        Max drawdown is the largest peak-to-trough decline in portfolio value.
-
-        Returns
-        -------
-        float
-            Maximum drawdown as a positive percentage (e.g., 15.0 means -15%).
-        """
+        """Compute maximum drawdown as a positive percentage."""
         if len(equity_curve) < 2:
             return 0.0
 
@@ -683,17 +653,7 @@ class BacktestEngine:
         return max_dd
 
     def _compute_sharpe_ratio(self, equity_curve: pd.Series) -> float:
-        """
-        Compute annualized Sharpe ratio with risk-free rate = 0%.
-
-        Sharpe = (mean daily return / std daily return) * sqrt(252)
-
-        Returns
-        -------
-        float
-            Annualized Sharpe ratio. Returns 0.0 if insufficient data or
-            zero standard deviation.
-        """
+        """Compute annualized Sharpe ratio (risk-free rate = 0%)."""
         if len(equity_curve) < 2:
             return 0.0
 

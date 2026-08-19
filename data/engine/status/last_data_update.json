@@ -1,0 +1,10 @@
+{
+  "trading_weekday": 1,
+  "slot": "P",
+  "timestamp": "2026-08-18T17:10:07.805387",
+  "total_symbols": 66,
+  "success_count": 66,
+  "failed_count": 0,
+  "failed_symbols": [],
+  "duration_seconds": 321.4582374095917
+}

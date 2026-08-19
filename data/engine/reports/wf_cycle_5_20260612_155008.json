@@ -1,0 +1,21 @@
+{
+  "cycle_number": 5,
+  "timestamp": "2026-06-12T15:50:08.696787",
+  "sl_val_loss": 0.21425524353981018,
+  "sl_epochs": 8,
+  "rl_avg_return": -1.07,
+  "rl_best_return": 49.74,
+  "rl_episodes": 50,
+  "backtest_return_pct": 72.38,
+  "backtest_sharpe": 0.391,
+  "backtest_win_rate_pct": 51.4,
+  "backtest_trades": 216,
+  "symbols": [
+    "HDB",
+    "HNX",
+    "HPG",
+    "HSG",
+    "HUT"
+  ],
+  "duration_seconds": 59.9
+}

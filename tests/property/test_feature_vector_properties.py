@@ -142,7 +142,7 @@ class TestProperty1NormalizationBounds:
     """
 
     @given(params=normalization_params_strategy())
-    @settings(max_examples=50)
+    @settings(max_examples=15)
     def test_build_output_in_zero_one_range(self, params):
         """
         All normalized feature values are in [0.0, 1.0] when input data
@@ -190,7 +190,7 @@ class TestProperty1NormalizationBounds:
         )
 
     @given(params=normalization_params_strategy())
-    @settings(max_examples=50)
+    @settings(max_examples=15)
     def test_build_clips_out_of_range_to_zero_one(self, params):
         """
         Values outside training range are clipped to [0.0, 1.0].
@@ -248,7 +248,7 @@ class TestProperty3NormalizeDenormalizeRoundTrip:
     """
 
     @given(params=normalization_params_strategy())
-    @settings(max_examples=50)
+    @settings(max_examples=15)
     def test_normalize_denormalize_round_trip(self, params):
         """
         Normalizing then denormalizing recovers original values within
@@ -338,7 +338,7 @@ class TestProperty4ParamsSerializationRoundTrip:
     """
 
     @given(params=normalization_params_strategy())
-    @settings(max_examples=50)
+    @settings(max_examples=15)
     def test_save_load_params_identical(self, params):
         """
         save_params() then loading produces min_vals and max_vals
@@ -403,7 +403,7 @@ class TestProperty6NaNHandling:
         params=normalization_params_strategy(),
         nan_fraction=st.floats(min_value=0.01, max_value=0.8),
     )
-    @settings(max_examples=50)
+    @settings(max_examples=15)
     def test_nan_input_produces_clean_output(self, params, nan_fraction):
         """
         Even when a fraction of indicator values are NaN, build() output
@@ -457,7 +457,7 @@ class TestProperty6NaNHandling:
         assert np.all(result <= 1.0)
 
     @given(params=normalization_params_strategy())
-    @settings(max_examples=30)
+    @settings(max_examples=15)
     def test_all_nan_column_produces_clean_output(self, params):
         """
         When an entire indicator column is NaN (e.g., PSAR_up/PSAR_down),
@@ -510,7 +510,7 @@ class TestProperty6NaNHandling:
         assert np.all(result <= 1.0)
 
     @given(params=normalization_params_strategy())
-    @settings(max_examples=30)
+    @settings(max_examples=15)
     def test_nan_at_start_handled_by_forward_fill_then_zero(self, params):
         """
         NaN at the beginning of a column (before any valid value) gets

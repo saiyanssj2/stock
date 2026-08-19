@@ -1,8 +1,21 @@
-streamlit
-vnstock
-ta
-plotly
-pandas
-feedparser
-yfinance
-google-generativeai
+# === Core App ===
+streamlit==1.58.0
+plotly==5.22.0
+pandas==1.5.3
+numpy==1.26.4
+
+# === Data Sources ===
+vnstock==4.0.4
+yfinance==1.4.1
+feedparser==6.0.12
+
+# === Technical Analysis ===
+ta==0.11.0
+
+# === AI/ML ===
+torch==2.12.0
+google-generativeai==0.8.6
+
+# === Testing (dev) ===
+pytest==9.0.3
+hypothesis==6.155.1

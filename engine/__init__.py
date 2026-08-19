@@ -23,6 +23,11 @@ from engine.config import (
     ResourceError,
     ConfigError,
 )
+from engine.extended_search import (
+    ExtendedSearchConfig,
+    ExtendedSearchProgress,
+    ExtendedDecisionReport,
+)
 from engine.market_state import (
     MarketState,
     INDICATOR_COLUMNS,
@@ -32,6 +37,14 @@ from engine.market_state import (
 )
 from engine.decision_engine import DecisionEngine
 from engine.search_module import DecisionReportGenerator
+from engine.background_training import (
+    BackgroundTrainingManager,
+    GPUMemoryMonitor,
+    SymbolQueue,
+    TrainingState,
+    TrainingStatus,
+)
+from engine.hardware_profile import HardwareProfile
 
 __all__ = [
     "DecisionEngine",
@@ -51,10 +64,19 @@ __all__ = [
     "ModelError",
     "ResourceError",
     "ConfigError",
+    "ExtendedSearchConfig",
+    "ExtendedSearchProgress",
+    "ExtendedDecisionReport",
     "MarketState",
     "INDICATOR_COLUMNS",
     "OHLCV_COLUMNS",
     "NUM_OHLCV",
     "NUM_INDICATORS",
     "DecisionReportGenerator",
+    "BackgroundTrainingManager",
+    "GPUMemoryMonitor",
+    "SymbolQueue",
+    "TrainingState",
+    "TrainingStatus",
+    "HardwareProfile",
 ]

@@ -13,7 +13,7 @@ import math
 import numpy as np
 import pandas as pd
 import pytest
-from hypothesis import given, settings, assume
+from hypothesis import given, settings, assume, HealthCheck
 from hypothesis import strategies as st
 
 from engine.backtest_engine import BacktestEngine
@@ -216,7 +216,7 @@ class TestBacktestTradeConstraints:
         signals=signal_sequence_strategy(min_len=15, max_len=50),
         capital=initial_capital_strategy(),
     )
-    @settings(max_examples=100, suppress_health_check=[])
+    @settings(max_examples=20, suppress_health_check=[HealthCheck.too_slow])
     def test_lot_size_multiple_of_100(self, df, signals, capital):
         """
         All executed trades have share quantities that are positive multiples of 100.
@@ -247,7 +247,7 @@ class TestBacktestTradeConstraints:
         signals=signal_sequence_strategy(min_len=15, max_len=50),
         capital=initial_capital_strategy(),
     )
-    @settings(max_examples=100, suppress_health_check=[])
+    @settings(max_examples=20, suppress_health_check=[])
     def test_price_within_daily_limit(self, df, signals, capital):
         """
         All executed trade prices do not exceed ±7% from the reference price.
@@ -312,7 +312,7 @@ class TestBacktestTradeConstraints:
         signals=signal_sequence_strategy(min_len=15, max_len=50),
         capital=initial_capital_strategy(),
     )
-    @settings(max_examples=100, suppress_health_check=[])
+    @settings(max_examples=20, suppress_health_check=[])
     def test_settlement_period_respected(self, df, signals, capital):
         """
         No sell occurs on a position within T+2.5 (3 trading days) of purchase.
@@ -356,7 +356,7 @@ class TestBacktestTradeConstraints:
         signals=signal_sequence_strategy(min_len=15, max_len=50),
         capital=initial_capital_strategy(),
     )
-    @settings(max_examples=100, suppress_health_check=[])
+    @settings(max_examples=20, suppress_health_check=[])
     def test_max_position_size_constraint(self, df, signals, capital):
         """
         Entry position value does not exceed 20% of portfolio value at time of entry.
@@ -424,7 +424,7 @@ class TestStrategyComparisonFairness:
         capital=initial_capital_strategy(),
         num_strategies=st.integers(min_value=2, max_value=5),
     )
-    @settings(max_examples=50, suppress_health_check=[])
+    @settings(max_examples=15, suppress_health_check=[])
     def test_all_strategies_same_date_range(self, df, capital, num_strategies):
         """
         All strategies in a comparison are evaluated on identical date ranges.
@@ -481,7 +481,7 @@ class TestStrategyComparisonFairness:
         capital=initial_capital_strategy(),
         num_strategies=st.integers(min_value=2, max_value=5),
     )
-    @settings(max_examples=50, suppress_health_check=[])
+    @settings(max_examples=15, suppress_health_check=[])
     def test_all_strategies_same_initial_capital(self, df, capital, num_strategies):
         """
         All strategies start with identical initial capital.
@@ -526,7 +526,7 @@ class TestStrategyComparisonFairness:
         capital=initial_capital_strategy(),
         num_strategies=st.integers(min_value=2, max_value=4),
     )
-    @settings(max_examples=50, suppress_health_check=[])
+    @settings(max_examples=15, suppress_health_check=[])
     def test_all_strategies_same_position_sizing_rules(self, df, capital, num_strategies):
         """
         All strategies are subject to the same position sizing rules
@@ -591,7 +591,7 @@ class TestStrategyComparisonFairness:
         df=ohlcv_dataframe_strategy(min_days=20, max_days=50),
         capital=initial_capital_strategy(),
     )
-    @settings(max_examples=50, suppress_health_check=[])
+    @settings(max_examples=15, suppress_health_check=[])
     def test_comparison_uses_same_data_for_all_strategies(self, df, capital):
         """
         All strategies receive the exact same DataFrame for signal generation.

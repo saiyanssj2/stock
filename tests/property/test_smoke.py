@@ -3,7 +3,7 @@ Smoke test to verify Hypothesis strategies and test infrastructure work correctl
 """
 
 import numpy as np
-from hypothesis import given, settings
+from hypothesis import given, settings, HealthCheck
 
 from tests.conftest import (
     market_state_strategy,
@@ -21,7 +21,7 @@ from tests.conftest import (
 
 
 @given(state=market_state_strategy())
-@settings(max_examples=10)
+@settings(max_examples=10, suppress_health_check=[HealthCheck.large_base_example, HealthCheck.data_too_large, HealthCheck.too_slow])
 def test_market_state_strategy_generates_valid_data(state):
     """Market state strategy produces well-formed data."""
     assert state["symbol"] is not None
@@ -36,7 +36,7 @@ def test_market_state_strategy_generates_valid_data(state):
 
 
 @given(fv=feature_vector_strategy())
-@settings(max_examples=10)
+@settings(max_examples=10, suppress_health_check=[HealthCheck.large_base_example, HealthCheck.data_too_large, HealthCheck.too_slow])
 def test_feature_vector_strategy_generates_normalized_data(fv):
     """Feature vector strategy produces data in [0, 1] by default."""
     assert fv.shape == (DEFAULT_LOOKBACK, NUM_FEATURES)

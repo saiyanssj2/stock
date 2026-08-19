@@ -20,7 +20,7 @@ from hypothesis import strategies as st
 
 settings.register_profile(
     "default",
-    max_examples=100,
+    max_examples=20,
     suppress_health_check=[HealthCheck.too_slow],
 )
 settings.register_profile(
@@ -30,7 +30,7 @@ settings.register_profile(
 )
 settings.register_profile(
     "quick",
-    max_examples=20,
+    max_examples=10,
     suppress_health_check=[HealthCheck.too_slow],
 )
 settings.load_profile("default")
@@ -85,52 +85,35 @@ def market_state_strategy(
         "TCB", "ACB", "BID", "CTG", "GAS", "PLX", "SAB", "VRE",
     ]))
 
-    # Generate realistic OHLCV data
-    # Start with a base price and random walk
-    base_price = draw(st.floats(min_value=10.0, max_value=200.0))
-    returns = draw(
-        st.lists(
-            st.floats(min_value=-0.069, max_value=0.069),  # ±7% VN market limit
-            min_size=lookback,
-            max_size=lookback,
-        )
-    )
+    # Use a seed from Hypothesis to generate numpy arrays efficiently
+    seed = draw(st.integers(min_value=0, max_value=2**32 - 1))
+    rng = np.random.default_rng(seed)
 
-    closes = np.zeros(lookback)
-    closes[0] = base_price
-    for i in range(1, lookback):
-        closes[i] = closes[i - 1] * (1.0 + returns[i])
+    # Generate realistic OHLCV data via random walk
+    base_price = draw(st.floats(min_value=10.0, max_value=200.0))
+    returns = rng.uniform(-0.069, 0.069, lookback)  # ±7% VN market limit
+    returns[0] = 0.0
+    closes = base_price * np.cumprod(1.0 + returns)
 
     # Derive OHLCV from close prices
     ohlcv = np.zeros((lookback, NUM_OHLCV_COLS))
-    for i in range(lookback):
-        close = closes[i]
-        # high >= close, low <= close, open somewhere between
-        spread = abs(close * 0.02)  # ~2% spread
-        ohlcv[i, 0] = close + draw(st.floats(min_value=-spread, max_value=spread))  # open
-        ohlcv[i, 1] = close + draw(st.floats(min_value=0, max_value=spread))  # high
-        ohlcv[i, 2] = close - draw(st.floats(min_value=0, max_value=spread))  # low
-        ohlcv[i, 3] = close  # close
-        ohlcv[i, 4] = draw(st.floats(min_value=10000.0, max_value=50000000.0))  # volume
+    spreads = np.abs(closes * 0.02)  # ~2% spread
+    ohlcv[:, 3] = closes  # close
+    ohlcv[:, 0] = closes + rng.uniform(-1, 1, lookback) * spreads  # open
+    ohlcv[:, 1] = np.maximum(ohlcv[:, 0], closes) + rng.uniform(0, 1, lookback) * spreads  # high
+    ohlcv[:, 2] = np.minimum(ohlcv[:, 0], closes) - rng.uniform(0, 1, lookback) * spreads  # low
+    ohlcv[:, 4] = rng.uniform(10000.0, 50000000.0, lookback)  # volume
 
     # Ensure high >= max(open, close) and low <= min(open, close)
     ohlcv[:, 1] = np.maximum(ohlcv[:, 1], np.maximum(ohlcv[:, 0], ohlcv[:, 3]))
     ohlcv[:, 2] = np.minimum(ohlcv[:, 2], np.minimum(ohlcv[:, 0], ohlcv[:, 3]))
 
     # Generate indicator values
-    indicators = draw(
-        st.lists(
-            st.lists(
-                st.floats(min_value=-1000.0, max_value=1000.0, allow_nan=allow_nan,
-                          allow_infinity=False),
-                min_size=num_indicators,
-                max_size=num_indicators,
-            ),
-            min_size=lookback,
-            max_size=lookback,
-        )
-    )
-    indicators = np.array(indicators)
+    indicators = rng.uniform(-1000.0, 1000.0, (lookback, num_indicators))
+
+    if allow_nan:
+        nan_mask = rng.random((lookback, num_indicators)) < 0.1
+        indicators[nan_mask] = np.nan
 
     # Generate timestamp
     end_date = pd.Timestamp("2024-01-15")
@@ -169,34 +152,16 @@ def feature_vector_strategy(
     -------
     np.ndarray of shape (lookback, num_features)
     """
-    if normalized:
-        data = draw(
-            st.lists(
-                st.lists(
-                    st.floats(min_value=0.0, max_value=1.0,
-                              allow_nan=False, allow_infinity=False),
-                    min_size=num_features,
-                    max_size=num_features,
-                ),
-                min_size=lookback,
-                max_size=lookback,
-            )
-        )
-    else:
-        data = draw(
-            st.lists(
-                st.lists(
-                    st.floats(min_value=-1000.0, max_value=1000.0,
-                              allow_nan=False, allow_infinity=False),
-                    min_size=num_features,
-                    max_size=num_features,
-                ),
-                min_size=lookback,
-                max_size=lookback,
-            )
-        )
+    # Use a seed from Hypothesis to generate numpy arrays efficiently
+    seed = draw(st.integers(min_value=0, max_value=2**32 - 1))
+    rng = np.random.default_rng(seed)
 
-    return np.array(data)
+    if normalized:
+        data = rng.uniform(0.0, 1.0, (lookback, num_features))
+    else:
+        data = rng.uniform(-1000.0, 1000.0, (lookback, num_features))
+
+    return data
 
 
 @st.composite

@@ -1,67 +1,76 @@
+"""
+Stock Trading Platform - Multi-page Streamlit Application.
+
+Router chính dùng st.navigation() để điều hướng giữa các pages.
+Status bar persistent ở top mọi page.
+Training chỉ chạy khi user nhấn Start trong trang Training.
+"""
+import json
+import logging
+import threading
+from datetime import datetime
+from pathlib import Path
+
 import streamlit as st
-import os
-import pandas as pd
-from market import get_world_indices, get_vn_indices
-from ui_market import show_market
-from ui_vnindex import show_vnindex
-from ui_analyze import show_analyze
-from ui_scanner import show_scanner
-from ui_update import show_update
-from ui_wyckoff_edu import show_wyckoff_edu
 
-st.set_page_config(page_title="Phan Tich Ky Thuat", layout="wide")
-st.title("📈 Phân Tích Kỹ Thuật Chứng Khoán")
+logger = logging.getLogger(__name__)
 
-BASE_DIR = os.path.dirname(os.path.abspath(__file__))
+# Log app start
+_startup_log = Path("pipeline_debug.log")
+with open(_startup_log, "a", encoding="utf-8") as _f:
+    _f.write(f"[{datetime.now():%Y-%m-%d %H:%M:%S}] APP SCRIPT LOADED (Streamlit render)\n")
 
+# Cấu hình page - phải gọi đầu tiên
+st.set_page_config(
+    page_title="Stock Trading Platform",
+    layout="wide",
+    initial_sidebar_state="expanded",
+)
 
-@st.cache_data(ttl=10800)
-def load_world_indices():
-    return get_world_indices()
+from ui.components.status_bar import render_status_bar
 
+# Hiển thị status bar persistent ở top mọi page
+render_status_bar()
 
-@st.cache_data(ttl=10800)
-def load_vn_indices():
-    return get_vn_indices()
-
-
-@st.cache_data(ttl=10800)
-def load_vnindex_analysis():
-    for fname in ['VNINDEX_full.csv', 'VNINDEX.csv']:
-        path = os.path.join(BASE_DIR, fname)
-        if os.path.exists(path):
-            df = pd.read_csv(path)
-            df['time'] = pd.to_datetime(df['time'])
-            return df.sort_values('time').reset_index(drop=True)
-    return None
+# === Hiển thị trạng thái pipeline (nếu đang chạy) ===
+_status_file = Path("data/engine/status/auto_pipeline_status.json")
+if _status_file.exists():
+    try:
+        _status = json.loads(_status_file.read_text(encoding="utf-8"))
+        if _status.get("state") == "running":
+            st.info(f"⏳ {_status.get('message', 'Pipeline đang chạy...')}", icon="🔄")
+    except Exception:
+        pass
 
 
-# --- Thi truong ---
-show_market(load_world_indices, load_vn_indices, load_vnindex_analysis)
+# ==============================================================================
+# Auto-refresh: nếu pipeline đang chạy → rerun mỗi 10s
+# ==============================================================================
+_pipeline_running = False
+if _status_file.exists():
+    try:
+        _ps = json.loads(_status_file.read_text(encoding="utf-8"))
+        _pipeline_running = _ps.get("state") == "running"
+    except Exception:
+        pass
 
-st.divider()
+if _pipeline_running:
+    @st.fragment(run_every=10)
+    def _auto_refresh():
+        """Fragment tự refresh mỗi 10s khi pipeline đang chạy."""
+        pass
+    _auto_refresh()
 
-# --- VNINDEX Wyckoff ---
-show_vnindex(load_vnindex_analysis)
 
-st.divider()
+# ==============================================================================
+# Navigation
+# ==============================================================================
+pages = [
+    st.Page("ui/pages/page_training.py", title="Training", icon="🧠", default=True),
+    st.Page("ui/pages/page_backtest.py", title="Backtest", icon="📈"),
+    st.Page("ui/pages/page_recommendations.py", title="Recommendations", icon="⭐"),
+    st.Page("ui/pages/page_settings.py", title="Settings", icon="⚙️"),
+]
 
-# --- Tabs ---
-tab_analyze, tab_scanner, tab_wyckoff, tab_update = st.tabs([
-    "🤖 Phân tích kỹ thuật chi tiết",
-    "🔍 Bộ lọc cổ phiếu",
-    "📚 Kiến thức Wyckoff",
-    "📥 Cập nhật dữ liệu"
-])
-
-with tab_analyze:
-    show_analyze(BASE_DIR)
-
-with tab_scanner:
-    show_scanner(BASE_DIR)
-
-with tab_wyckoff:
-    show_wyckoff_edu()
-
-with tab_update:
-    show_update(BASE_DIR)
+nav = st.navigation(pages)
+nav.run()

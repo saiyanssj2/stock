@@ -37,7 +37,7 @@ class Action(Enum):
 class ModelConfig:
     """Configuration for the TCN+Attention evaluation model architecture."""
 
-    num_features: int = 63  # OHLCV (5) + indicators (~58)
+    num_features: int = 78  # OHLCV (5) + indicators (73: 56 cũ + 5 Wyckoff + 6 Value + 6 Market Context)
     lookback: int = 60  # Default lookback window (trading sessions)
     tcn_channels: List[int] = field(default_factory=lambda: [128, 128, 64])
     kernel_size: int = 3
@@ -71,6 +71,32 @@ class TrainingConfig:
 
 
 @dataclass
+class ResourceConfig:
+    """Resource limits to prevent system overload during training.
+
+    Defaults are conservative (50% CPU, GPU pause at 75%) to keep
+    the system responsive and avoid crashes from 100% utilization.
+    """
+
+    # CPU: max threads for PyTorch (0 = auto, uses ~50% cores)
+    cpu_threads: int = 0
+    # CPU: max inter-op parallelism threads
+    cpu_interop_threads: int = 2
+    # GPU: pause training if utilization exceeds this (fraction 0-1)
+    gpu_pause_threshold: float = 0.75
+    # GPU: resume training when utilization drops below this
+    gpu_resume_threshold: float = 0.60
+    # GPU: max VRAM fraction to use (0-1)
+    gpu_max_memory_fraction: float = 0.70
+    # Training: max workers for DataLoader (0 = main thread only)
+    dataloader_workers: int = 0
+    # Training: pin memory for faster GPU transfer
+    pin_memory: bool = False
+    # Training: reduce batch size from default to save memory
+    batch_size_reduction_factor: float = 1.0
+
+
+@dataclass
 class EngineConfig:
     """Top-level configuration for the Decision Engine."""
 
@@ -90,6 +116,10 @@ class EngineConfig:
     max_analysis_time_s: float = 10.0  # Full analysis timeout
     confidence_hold_threshold: float = 0.3  # Below this → force HOLD
     max_vram_inference_gb: float = 4.0
+    # Price in CSV is in units of 1000 VND. Multiply by this to get actual VND.
+    # Set to 1.0 if data is already in VND (used in tests).
+    # Production code (DecisionEngine) sets this to 1000.0.
+    price_scale: float = 1.0
     csv_required_columns: List[str] = field(
         default_factory=lambda: ["time", "open", "high", "low", "close", "volume"]
     )

@@ -1,70 +1,37 @@
-"""Unit tests for the BacktestEngine module."""
+"""
+Unit tests bổ sung cho BacktestEngineWorker - Edge cases.
 
-import math
+Bổ sung cho test_backtest_worker.py, tập trung:
+- VN rules enforcement edge cases (T+2.5, ±7%, lot 100)
+- Manual backtest với dữ liệu mẫu chi tiết
+- Benchmark comparison logic
+
+Requirements: 7.1, 7.2, 7.4, 7.5
+"""
+
+from datetime import date
+from pathlib import Path
+from unittest.mock import patch
 
 import numpy as np
 import pandas as pd
 import pytest
 
-from engine.backtest_engine import BacktestEngine, Strategy
-from engine.config import Action, BacktestResult, ComparisonResult, ConfigError, DataError, Trade
-
-
-# ==============================================================================
-# Test Strategies
-# ==============================================================================
-
-
-class AlwaysBuyStrategy:
-    """Strategy that always generates BUY signals."""
-
-    def generate_signal(self, df: pd.DataFrame, index: int) -> Action:
-        return Action.BUY
-
-
-class AlwaysSellStrategy:
-    """Strategy that always generates SELL signals."""
-
-    def generate_signal(self, df: pd.DataFrame, index: int) -> Action:
-        return Action.SELL
-
-
-class AlwaysHoldStrategy:
-    """Strategy that always generates HOLD signals."""
-
-    def generate_signal(self, df: pd.DataFrame, index: int) -> Action:
-        return Action.HOLD
-
-
-class BuyThenSellStrategy:
-    """Strategy that buys on first signal, then sells after settlement."""
-
-    def __init__(self):
-        self._bought = False
-
-    def generate_signal(self, df: pd.DataFrame, index: int) -> Action:
-        if not self._bought:
-            self._bought = True
-            return Action.BUY
-        return Action.SELL
-
-
-class BuyOnDaySellLater:
-    """Strategy that buys on a specific day index and sells on another."""
-
-    def __init__(self, buy_day: int, sell_day: int):
-        self.buy_day = buy_day
-        self.sell_day = sell_day
-        self._call_count = 0
-
-    def generate_signal(self, df: pd.DataFrame, index: int) -> Action:
-        day = self._call_count
-        self._call_count += 1
-        if day == self.buy_day:
-            return Action.BUY
-        elif day == self.sell_day:
-            return Action.SELL
-        return Action.HOLD
+from config.vn_market_rules import LOT_SIZE, PRICE_LIMIT_PCT, SETTLEMENT_DAYS
+from engine.workers.backtest_worker import BacktestEngineWorker
+from engine.workers.vn_rules import (
+    compute_earliest_sell_date,
+    enforce_vn_rules,
+    is_within_settlement_period,
+    validate_lot_size,
+    validate_price_limit,
+)
+from models.backtest_models import (
+    AutoBacktestResult,
+    BacktestResult,
+    ManualBacktestParams,
+    Trade,
+)
 
 
 # ==============================================================================
@@ -72,455 +39,454 @@ class BuyOnDaySellLater:
 # ==============================================================================
 
 
-def _make_df(
-    num_days: int = 20,
-    start_price: float = 50000.0,
-    daily_return: float = 0.01,
-    start_date: str = "2023-01-01",
-) -> pd.DataFrame:
-    """Create a synthetic OHLCV DataFrame with a consistent upward trend."""
-    dates = pd.date_range(start=start_date, periods=num_days, freq="B")
-    prices = [start_price * ((1 + daily_return) ** i) for i in range(num_days)]
+@pytest.fixture
+def trending_up_csv(tmp_path) -> Path:
+    """Tạo CSV với trend tăng rõ ràng → sẽ có BUY signal."""
+    dates = pd.bdate_range(start="2024-01-02", periods=60)
+    # Giá tăng đều từ 50 lên 70 → EMA ngắn sẽ cắt lên EMA dài
+    close = np.linspace(50.0, 70.0, 60)
+    # Thêm chút noise nhỏ
+    np.random.seed(123)
+    close = close + np.random.randn(60) * 0.1
 
-    data = {
-        "time": dates,
-        "open": [p * 0.99 for p in prices],
-        "high": [p * 1.02 for p in prices],
-        "low": [p * 0.98 for p in prices],
-        "close": prices,
-        "volume": [1_000_000] * num_days,
-    }
-    return pd.DataFrame(data)
-
-
-def _make_flat_df(
-    num_days: int = 20,
-    price: float = 50000.0,
-    start_date: str = "2023-01-01",
-) -> pd.DataFrame:
-    """Create a flat-price DataFrame (no price movement)."""
-    dates = pd.date_range(start=start_date, periods=num_days, freq="B")
-    data = {
-        "time": dates,
-        "open": [price] * num_days,
-        "high": [price] * num_days,
-        "low": [price] * num_days,
-        "close": [price] * num_days,
-        "volume": [1_000_000] * num_days,
-    }
-    return pd.DataFrame(data)
+    df = pd.DataFrame({
+        "time": dates.strftime("%Y-%m-%d"),
+        "open": close - 0.1,
+        "high": close + 0.3,
+        "low": close - 0.3,
+        "close": close,
+        "volume": np.random.randint(100000, 500000, 60),
+    })
+    csv_path = tmp_path / "UPTREND.csv"
+    df.to_csv(csv_path, index=False)
+    return tmp_path
 
 
-# ==============================================================================
-# Tests: Initialization
-# ==============================================================================
+@pytest.fixture
+def volatile_csv(tmp_path) -> Path:
+    """Tạo CSV với giá volatile lớn → có thể vi phạm ±7%."""
+    dates = pd.bdate_range(start="2024-01-02", periods=40)
+    # Giá dao động mạnh: có ngày thay đổi > 7%
+    close = [50.0]
+    for i in range(1, 40):
+        # Cứ 5 ngày lại có 1 ngày nhảy lớn (>7%)
+        if i % 5 == 0:
+            close.append(close[-1] * 1.08)  # +8% vi phạm biên độ
+        else:
+            close.append(close[-1] * (1 + np.random.uniform(-0.02, 0.02)))
+    close = np.array(close)
+
+    df = pd.DataFrame({
+        "time": dates.strftime("%Y-%m-%d"),
+        "open": close - 0.1,
+        "high": close + 0.5,
+        "low": close - 0.5,
+        "close": close,
+        "volume": np.random.randint(100000, 500000, 40),
+    })
+    csv_path = tmp_path / "VOLATILE.csv"
+    df.to_csv(csv_path, index=False)
+    return tmp_path
 
 
-class TestBacktestEngineInit:
-    def test_default_initialization(self):
-        engine = BacktestEngine()
-        assert engine.initial_capital == 100_000_000.0
-        assert engine.max_position_pct == 0.20
-        assert engine.lot_size == 100
-        assert engine.daily_price_limit == 0.07
-        assert engine.settlement_days == 3  # ceil(2.5)
+@pytest.fixture
+def short_csv(tmp_path) -> Path:
+    """Tạo CSV với ít ngày giao dịch (< LONG_MA_PERIOD) → chỉ HOLD."""
+    dates = pd.bdate_range(start="2024-01-02", periods=10)
+    close = np.linspace(50.0, 52.0, 10)
 
-    def test_custom_initialization(self):
-        engine = BacktestEngine(
-            initial_capital=50_000_000.0,
-            max_position_pct=0.10,
-        )
-        assert engine.initial_capital == 50_000_000.0
-        assert engine.max_position_pct == 0.10
-
-
-# ==============================================================================
-# Tests: Date Validation
-# ==============================================================================
+    df = pd.DataFrame({
+        "time": dates.strftime("%Y-%m-%d"),
+        "open": close - 0.1,
+        "high": close + 0.2,
+        "low": close - 0.2,
+        "close": close,
+        "volume": np.random.randint(100000, 500000, 10),
+    })
+    csv_path = tmp_path / "SHORT.csv"
+    df.to_csv(csv_path, index=False)
+    return tmp_path
 
 
-class TestDateValidation:
-    def test_invalid_start_after_end(self):
-        engine = BacktestEngine()
-        df = _make_df(20)
-        with pytest.raises(ConfigError, match="must be before"):
-            engine.run(AlwaysHoldStrategy(), df, "2023-02-01", "2023-01-01")
+@pytest.fixture
+def multi_symbol_csv(tmp_path) -> Path:
+    """Tạo nhiều file CSV cho test run_auto."""
+    dates = pd.bdate_range(start="2024-01-02", periods=60)
+    np.random.seed(42)
 
-    def test_same_start_and_end(self):
-        engine = BacktestEngine()
-        df = _make_df(20)
-        with pytest.raises(ConfigError, match="must be before"):
-            engine.run(AlwaysHoldStrategy(), df, "2023-01-01", "2023-01-01")
-
-    def test_no_data_in_range(self):
-        engine = BacktestEngine()
-        df = _make_df(20, start_date="2023-01-01")
-        with pytest.raises(ConfigError, match="No data found"):
-            engine.run(AlwaysHoldStrategy(), df, "2024-01-01", "2024-12-31")
-
-    def test_invalid_date_format(self):
-        engine = BacktestEngine()
-        df = _make_df(20)
-        with pytest.raises(ConfigError):
-            engine.run(AlwaysHoldStrategy(), df, "not-a-date", "2023-12-31")
-
-
-# ==============================================================================
-# Tests: DataFrame Validation
-# ==============================================================================
-
-
-class TestDataFrameValidation:
-    def test_missing_columns(self):
-        engine = BacktestEngine()
-        df = pd.DataFrame({"time": pd.date_range("2023-01-01", periods=5, freq="B")})
-        with pytest.raises(DataError, match="missing required columns"):
-            engine.run(AlwaysHoldStrategy(), df, "2023-01-01", "2023-12-31")
-
-    def test_partial_missing_columns(self):
-        engine = BacktestEngine()
+    for symbol in ["AAA", "BBB", "CCC"]:
+        close = 50.0 + np.cumsum(np.random.randn(60) * 0.3)
+        close = np.maximum(close, 10.0)
         df = pd.DataFrame({
-            "time": pd.date_range("2023-01-01", periods=5, freq="B"),
-            "open": [100] * 5,
-            "close": [100] * 5,
+            "time": dates.strftime("%Y-%m-%d"),
+            "open": close - 0.1,
+            "high": close + 0.3,
+            "low": close - 0.3,
+            "close": close,
+            "volume": np.random.randint(100000, 500000, 60),
         })
-        with pytest.raises(DataError, match="missing required columns"):
-            engine.run(AlwaysHoldStrategy(), df, "2023-01-01", "2023-12-31")
+        csv_path = tmp_path / f"{symbol}.csv"
+        df.to_csv(csv_path, index=False)
+    return tmp_path
 
 
 # ==============================================================================
-# Tests: Trade Execution Rules
+# Test VN Rules Enforcement Edge Cases (Req 7.5)
 # ==============================================================================
 
 
-class TestTradeExecution:
-    def test_lot_size_enforcement(self):
-        """Shares must be a multiple of 100."""
-        engine = BacktestEngine(initial_capital=10_000_000.0)
-        df = _make_df(20, start_price=50000.0)
-        result = engine.run(
-            BuyThenSellStrategy(), df, "2023-01-01", "2023-12-31"
+class TestVNRulesSettlementPeriod:
+    """Test T+2.5 settlement period enforcement trong backtest."""
+
+    def test_sell_within_settlement_blocked(self, trending_up_csv):
+        """Sell signal trong 3 ngày đầu phải bị skip (Req 5.5)."""
+        worker = BacktestEngineWorker(data_dir=trending_up_csv)
+        params = ManualBacktestParams(
+            symbol="UPTREND",
+            start_date=date(2024, 1, 2),
+            end_date=date(2024, 3, 30),
+            initial_capital=100_000_000.0,
+            enforce_vn_rules=True,
         )
+        result = worker.run_manual(params)
+        # Kiểm tra mọi trade đều giữ >= 3 ngày giao dịch
         for trade in result.trades:
+            if trade.buy_date and trade.sell_date:
+                # holding_days (calendar days) phải >= 3
+                # vì 3 trading days >= 3 calendar days tối thiểu
+                assert trade.holding_days >= 3
+
+    def test_is_within_settlement_true_for_early_sell(self):
+        """Ngày bán trước earliest_sell_date phải trả về True."""
+        buy_date = date(2024, 1, 2)  # Thứ Ba
+        sell_date = date(2024, 1, 3)  # Thứ Tư (chỉ 1 trading day)
+        assert is_within_settlement_period(buy_date, sell_date) is True
+
+    def test_is_within_settlement_false_after_settlement(self):
+        """Ngày bán sau earliest_sell_date phải trả về False."""
+        buy_date = date(2024, 1, 2)  # Thứ Ba
+        # Earliest sell = T+3 trading days = 2024-01-05 (Thứ Sáu)
+        sell_date = date(2024, 1, 8)  # Thứ Hai tuần sau
+        assert is_within_settlement_period(buy_date, sell_date) is False
+
+    def test_earliest_sell_date_skips_weekends(self):
+        """Earliest sell date phải bỏ qua weekends."""
+        buy_date = date(2024, 1, 4)  # Thứ Năm
+        # +3 trading days: Fri(5), Mon(8), Tue(9)
+        earliest = compute_earliest_sell_date(buy_date)
+        assert earliest == date(2024, 1, 9)
+
+    def test_enforce_vn_rules_adjusts_sell_date_if_too_early(self):
+        """enforce_vn_rules phải điều chỉnh sell_date nếu trong settlement."""
+        trade = Trade(
+            symbol="TEST",
+            buy_date=date(2024, 1, 2),
+            sell_date=date(2024, 1, 3),  # Quá sớm
+            buy_price=50.0,
+            sell_price=52.0,
+            shares=100,
+            pnl=200.0,
+            pnl_pct=0.04,
+            holding_days=1,
+        )
+        adjusted = enforce_vn_rules(trade)
+        earliest = compute_earliest_sell_date(date(2024, 1, 2))
+        assert adjusted.sell_date >= earliest
+
+    def test_no_trades_when_vn_rules_enabled_short_data(self, short_csv):
+        """Data quá ngắn kết hợp VN rules → không đủ signals → 0 trades."""
+        worker = BacktestEngineWorker(data_dir=short_csv)
+        params = ManualBacktestParams(
+            symbol="SHORT",
+            start_date=date(2024, 1, 2),
+            end_date=date(2024, 1, 15),
+            initial_capital=100_000_000.0,
+            enforce_vn_rules=True,
+        )
+        result = worker.run_manual(params)
+        # Với 10 ngày data (< LONG_MA_PERIOD=20), tất cả signals sẽ là HOLD
+        assert result.total_trades == 0
+
+
+class TestVNRulesPriceLimit:
+    """Test ±7% daily price limit enforcement (Req 7.5)."""
+
+    def test_price_within_limit_accepted(self):
+        """Giá thay đổi 5% phải hợp lệ (< 7%)."""
+        assert validate_price_limit(52.5, 50.0) is True  # +5%
+
+    def test_price_at_limit_boundary_accepted(self):
+        """Giá thay đổi đúng 7% phải hợp lệ (<=7%)."""
+        assert validate_price_limit(53.5, 50.0) is True  # +7%
+
+    def test_price_exceeds_limit_rejected(self):
+        """Giá thay đổi > 7% phải bị reject."""
+        assert validate_price_limit(54.0, 50.0) is False  # +8%
+
+    def test_price_floor_limit_accepted(self):
+        """Giá giảm 7% (floor) phải hợp lệ."""
+        assert validate_price_limit(46.5, 50.0) is True  # -7%
+
+    def test_price_below_floor_rejected(self):
+        """Giá giảm > 7% (dưới floor) phải bị reject."""
+        assert validate_price_limit(46.0, 50.0) is False  # -8%
+
+    def test_zero_reference_price_rejected(self):
+        """Giá tham chiếu = 0 phải trả về False."""
+        assert validate_price_limit(50.0, 0.0) is False
+
+    def test_negative_price_rejected(self):
+        """Giá âm phải trả về False."""
+        assert validate_price_limit(-5.0, 50.0) is False
+
+    def test_check_price_limit_in_worker(self, trending_up_csv):
+        """Worker._check_price_limit phải cùng logic với validate_price_limit."""
+        worker = BacktestEngineWorker(data_dir=trending_up_csv)
+        # Trong biên độ
+        assert worker._check_price_limit(53.0, 50.0) is True
+        # Vượt biên độ
+        assert worker._check_price_limit(54.5, 50.0) is False
+
+
+class TestVNRulesLotSize:
+    """Test lot size = bội 100 enforcement (Req 7.5)."""
+
+    def test_valid_lot_sizes(self):
+        """Bội số 100 phải hợp lệ."""
+        assert validate_lot_size(100) is True
+        assert validate_lot_size(500) is True
+        assert validate_lot_size(1000) is True
+
+    def test_invalid_lot_sizes(self):
+        """Không phải bội 100 phải không hợp lệ."""
+        assert validate_lot_size(50) is False
+        assert validate_lot_size(150) is False
+        assert validate_lot_size(99) is False
+
+    def test_zero_or_negative_lot_invalid(self):
+        """Lot size 0 hoặc âm phải không hợp lệ."""
+        assert validate_lot_size(0) is False
+        assert validate_lot_size(-100) is False
+
+    def test_enforce_vn_rules_rounds_down_shares(self):
+        """enforce_vn_rules phải làm tròn xuống bội 100."""
+        trade = Trade(
+            symbol="TEST",
+            buy_date=date(2024, 1, 2),
+            sell_date=date(2024, 1, 10),
+            buy_price=50.0,
+            sell_price=52.0,
+            shares=350,  # Không phải bội 100
+            pnl=700.0,
+            pnl_pct=0.04,
+            holding_days=8,
+        )
+        adjusted = enforce_vn_rules(trade)
+        assert adjusted.shares == 300
+        assert adjusted.shares % LOT_SIZE == 0
+
+    def test_enforce_vn_rules_minimum_one_lot(self):
+        """enforce_vn_rules với shares < 100 phải đặt minimum = 100."""
+        trade = Trade(
+            symbol="TEST",
+            buy_date=date(2024, 1, 2),
+            sell_date=date(2024, 1, 10),
+            buy_price=50.0,
+            sell_price=52.0,
+            shares=50,  # < LOT_SIZE
+            pnl=100.0,
+            pnl_pct=0.04,
+            holding_days=8,
+        )
+        adjusted = enforce_vn_rules(trade)
+        assert adjusted.shares == LOT_SIZE
+
+
+# ==============================================================================
+# Test Manual Backtest với sample data (Req 7.1, 7.2)
+# ==============================================================================
+
+
+class TestManualBacktestDetailed:
+    """Test chi tiết manual backtest results."""
+
+    def test_equity_curve_length_matches_data_period(self, trending_up_csv):
+        """Equity curve phải có length = số ngày giao dịch trong period (Req 7.2)."""
+        worker = BacktestEngineWorker(data_dir=trending_up_csv)
+        params = ManualBacktestParams(
+            symbol="UPTREND",
+            start_date=date(2024, 1, 2),
+            end_date=date(2024, 3, 30),
+            initial_capital=100_000_000.0,
+        )
+        result = worker.run_manual(params)
+        assert len(result.equity_curve) > 0
+        # Equity curve phải <= 60 (số ngày data)
+        assert len(result.equity_curve) <= 60
+
+    def test_equity_curve_starts_near_initial_capital(self, trending_up_csv):
+        """Điểm đầu equity curve phải gần initial_capital (Req 7.2)."""
+        worker = BacktestEngineWorker(data_dir=trending_up_csv)
+        params = ManualBacktestParams(
+            symbol="UPTREND",
+            start_date=date(2024, 1, 2),
+            end_date=date(2024, 3, 30),
+            initial_capital=100_000_000.0,
+        )
+        result = worker.run_manual(params)
+        # Trước khi mua, equity = capital → điểm đầu = initial_capital
+        assert result.equity_curve[0] == 100_000_000.0
+
+    def test_final_capital_matches_equity_curve_end(self, trending_up_csv):
+        """final_capital phải bằng giá trị cuối equity curve (Req 7.2)."""
+        worker = BacktestEngineWorker(data_dir=trending_up_csv)
+        params = ManualBacktestParams(
+            symbol="UPTREND",
+            start_date=date(2024, 1, 2),
+            end_date=date(2024, 3, 30),
+            initial_capital=100_000_000.0,
+        )
+        result = worker.run_manual(params)
+        if result.equity_curve:
+            assert result.final_capital == result.equity_curve[-1]
+
+    def test_metrics_all_present_in_result(self, trending_up_csv):
+        """Result phải chứa tất cả metrics: win_rate, sharpe, drawdown, return (Req 7.2)."""
+        worker = BacktestEngineWorker(data_dir=trending_up_csv)
+        params = ManualBacktestParams(
+            symbol="UPTREND",
+            start_date=date(2024, 1, 2),
+            end_date=date(2024, 3, 30),
+            initial_capital=100_000_000.0,
+        )
+        result = worker.run_manual(params)
+        assert hasattr(result, "win_rate")
+        assert hasattr(result, "sharpe_ratio")
+        assert hasattr(result, "max_drawdown")
+        assert hasattr(result, "total_return")
+        # Kiểm tra kiểu dữ liệu
+        assert isinstance(result.win_rate, float)
+        assert isinstance(result.sharpe_ratio, float)
+        assert isinstance(result.max_drawdown, float)
+        assert isinstance(result.total_return, float)
+
+    def test_win_rate_in_valid_range(self, trending_up_csv):
+        """Win rate phải trong khoảng [0, 100]% (Req 7.2)."""
+        worker = BacktestEngineWorker(data_dir=trending_up_csv)
+        params = ManualBacktestParams(
+            symbol="UPTREND",
+            start_date=date(2024, 1, 2),
+            end_date=date(2024, 3, 30),
+            initial_capital=100_000_000.0,
+        )
+        result = worker.run_manual(params)
+        assert 0.0 <= result.win_rate <= 100.0
+
+    def test_max_drawdown_non_negative(self, trending_up_csv):
+        """Max drawdown phải >= 0 (Req 7.2)."""
+        worker = BacktestEngineWorker(data_dir=trending_up_csv)
+        params = ManualBacktestParams(
+            symbol="UPTREND",
+            start_date=date(2024, 1, 2),
+            end_date=date(2024, 3, 30),
+            initial_capital=100_000_000.0,
+        )
+        result = worker.run_manual(params)
+        assert result.max_drawdown >= 0.0
+
+    def test_trades_have_all_required_fields(self, trending_up_csv):
+        """Mỗi trade phải có đủ fields: symbol, dates, prices, pnl (Req 7.2)."""
+        worker = BacktestEngineWorker(data_dir=trending_up_csv)
+        params = ManualBacktestParams(
+            symbol="UPTREND",
+            start_date=date(2024, 1, 2),
+            end_date=date(2024, 3, 30),
+            initial_capital=100_000_000.0,
+        )
+        result = worker.run_manual(params)
+        for trade in result.trades:
+            assert trade.symbol == "UPTREND"
+            assert trade.buy_date is not None
+            assert trade.sell_date is not None
+            assert trade.buy_price > 0
+            assert trade.sell_price > 0
             assert trade.shares > 0
-            assert trade.shares % 100 == 0
+            assert trade.pnl is not None
 
-    def test_settlement_period_enforced(self):
-        """Cannot sell within T+2.5 (3 trading days) of purchase."""
-        # Buy on day 0, try to sell on day 1 - should fail
-        engine = BacktestEngine(initial_capital=10_000_000.0)
-        df = _make_df(10, start_price=50000.0)
-        strategy = BuyOnDaySellLater(buy_day=0, sell_day=1)
-        result = engine.run(strategy, df, "2023-01-01", "2023-12-31")
-        # Should have no completed trades (sell blocked by settlement)
-        assert len(result.trades) == 0
-
-    def test_settlement_period_sell_after_3_days(self):
-        """Can sell after 3 full trading days (T+2.5 ceil = 3)."""
-        engine = BacktestEngine(initial_capital=100_000_000.0)
-        df = _make_df(10, start_price=50000.0)
-        strategy = BuyOnDaySellLater(buy_day=0, sell_day=3)
-        result = engine.run(strategy, df, "2023-01-01", "2023-12-31")
-        assert len(result.trades) == 1
-
-    def test_max_position_size(self):
-        """Position value should not exceed 20% of portfolio."""
-        engine = BacktestEngine(
-            initial_capital=100_000_000.0, max_position_pct=0.20
+    def test_backtest_without_vn_rules(self, trending_up_csv):
+        """Backtest với enforce_vn_rules=False cho phép sell sớm hơn (Req 7.1)."""
+        worker = BacktestEngineWorker(data_dir=trending_up_csv)
+        params_no_rules = ManualBacktestParams(
+            symbol="UPTREND",
+            start_date=date(2024, 1, 2),
+            end_date=date(2024, 3, 30),
+            initial_capital=100_000_000.0,
+            enforce_vn_rules=False,
         )
-        df = _make_df(20, start_price=50000.0)
-        result = engine.run(BuyThenSellStrategy(), df, "2023-01-01", "2023-12-31")
-        if result.trades:
-            trade = result.trades[0]
-            position_value = trade.entry_price * trade.shares
-            # At time of entry, portfolio value is initial_capital
-            max_allowed = engine.initial_capital * engine.max_position_pct
-            assert position_value <= max_allowed + 1.0  # small float tolerance
-
-    def test_price_limit_blocks_trade(self):
-        """Trades should be blocked if price exceeds ±7% from reference."""
-        engine = BacktestEngine(initial_capital=10_000_000.0)
-        # Create a DataFrame with a huge price jump (>7%)
-        dates = pd.date_range("2023-01-01", periods=5, freq="B")
-        data = {
-            "time": dates,
-            "open": [50000, 50000, 60000, 60000, 60000],  # >7% jump on day 2
-            "high": [50000, 50000, 60000, 60000, 60000],
-            "low": [50000, 50000, 60000, 60000, 60000],
-            "close": [50000, 50000, 60000, 60000, 60000],  # 20% jump
-            "volume": [1_000_000] * 5,
-        }
-        df = pd.DataFrame(data)
-
-        # Try to buy on day 2 (price jumped 20% from day 1)
-        strategy = BuyOnDaySellLater(buy_day=2, sell_day=4)
-        result = engine.run(strategy, df, "2023-01-01", "2023-12-31")
-        # Buy should be blocked due to price limit
-        assert len(result.trades) == 0
+        params_with_rules = ManualBacktestParams(
+            symbol="UPTREND",
+            start_date=date(2024, 1, 2),
+            end_date=date(2024, 3, 30),
+            initial_capital=100_000_000.0,
+            enforce_vn_rules=True,
+        )
+        result_no_rules = worker.run_manual(params_no_rules)
+        result_with_rules = worker.run_manual(params_with_rules)
+        # Có thể có nhiều trades hơn khi không enforce rules
+        # (vì không bị block bởi settlement)
+        assert result_no_rules.total_trades >= result_with_rules.total_trades
 
 
 # ==============================================================================
-# Tests: Metrics Computation
+# Test Benchmark Comparison (Req 7.4)
 # ==============================================================================
 
 
-class TestMetrics:
-    def test_hold_strategy_zero_return(self):
-        """Hold-only strategy should have 0% return and no trades."""
-        engine = BacktestEngine()
-        df = _make_df(20)
-        result = engine.run(AlwaysHoldStrategy(), df, "2023-01-01", "2023-12-31")
-        assert result.total_return_pct == 0.0
-        assert len(result.trades) == 0
-        assert result.win_rate == 0.0
+class TestBenchmarkComparison:
+    """Test comparison với benchmark strategies (Req 7.4)."""
 
-    def test_equity_curve_length(self):
-        """Equity curve should have one entry per trading day."""
-        engine = BacktestEngine()
-        df = _make_df(20)
-        result = engine.run(AlwaysHoldStrategy(), df, "2023-01-01", "2023-12-31")
-        assert len(result.equity_curve) == len(
-            df[(pd.to_datetime(df["time"]) >= "2023-01-01") &
-               (pd.to_datetime(df["time"]) <= "2023-12-31")]
+    def test_benchmark_generates_exactly_4_results(self, trending_up_csv):
+        """Phải có đúng 4 benchmark strategies: Wyckoff, Technical, Momentum, Mean Reversion."""
+        worker = BacktestEngineWorker(data_dir=trending_up_csv)
+        benchmarks = worker._generate_benchmark_results(1.5)
+        assert len(benchmarks) == 4
+
+    def test_benchmark_results_are_floats(self, trending_up_csv):
+        """Tất cả benchmark results phải là float."""
+        worker = BacktestEngineWorker(data_dir=trending_up_csv)
+        benchmarks = worker._generate_benchmark_results(1.0)
+        for b in benchmarks:
+            assert isinstance(b, float)
+
+    def test_strategies_beaten_count_correct(self, multi_symbol_csv):
+        """strategies_beaten phải đúng = số benchmarks mà AI thắng (Req 7.4)."""
+        worker = BacktestEngineWorker(data_dir=multi_symbol_csv)
+        result = worker.run_auto(symbols=["AAA", "BBB", "CCC"], cycle_number=1)
+        # Đếm thủ công: bao nhiêu benchmarks mà overall_sharpe > benchmark
+        expected_beaten = sum(
+            1 for b in result.benchmark_results
+            if result.overall_sharpe > b
         )
+        assert result.strategies_beaten == expected_beaten
 
-    def test_positive_return_on_uptrend(self):
-        """Buy and sell in an uptrend should produce positive return."""
-        engine = BacktestEngine(initial_capital=10_000_000.0)
-        df = _make_df(20, start_price=50000.0, daily_return=0.02)
-        strategy = BuyOnDaySellLater(buy_day=0, sell_day=5)
-        result = engine.run(strategy, df, "2023-01-01", "2023-12-31")
-        if result.trades:
-            assert result.total_return_pct > 0
-            assert result.trades[0].pnl > 0
+    def test_auto_backtest_aggregates_metrics_correctly(self, multi_symbol_csv):
+        """Auto backtest phải aggregate metrics từ nhiều symbols (Req 7.4)."""
+        worker = BacktestEngineWorker(data_dir=multi_symbol_csv)
+        result = worker.run_auto(symbols=["AAA", "BBB", "CCC"], cycle_number=1)
+        assert len(result.symbols_tested) == 3
+        # Metrics phải là giá trị hữu hạn
+        assert np.isfinite(result.overall_sharpe)
+        assert np.isfinite(result.overall_win_rate)
+        assert np.isfinite(result.overall_return)
 
-    def test_win_rate_calculation(self):
-        """Win rate should be correct for known trades."""
-        engine = BacktestEngine(initial_capital=10_000_000.0)
-        df = _make_df(20, start_price=50000.0, daily_return=0.01)
-        strategy = BuyOnDaySellLater(buy_day=0, sell_day=5)
-        result = engine.run(strategy, df, "2023-01-01", "2023-12-31")
-        if result.trades:
-            # In an uptrend, the trade should be a winner
-            assert result.win_rate == 100.0
-
-    def test_max_drawdown_on_flat(self):
-        """Flat price with no trades should have 0 drawdown."""
-        engine = BacktestEngine()
-        df = _make_flat_df(20)
-        result = engine.run(AlwaysHoldStrategy(), df, "2023-01-01", "2023-12-31")
-        assert result.max_drawdown == 0.0
-
-    def test_sharpe_ratio_on_flat(self):
-        """Flat equity (no trades) should have 0 Sharpe."""
-        engine = BacktestEngine()
-        df = _make_flat_df(20)
-        result = engine.run(AlwaysHoldStrategy(), df, "2023-01-01", "2023-12-31")
-        assert result.sharpe_ratio == 0.0
-
-    def test_trade_records_complete(self):
-        """Trade records should have all fields populated."""
-        engine = BacktestEngine(initial_capital=10_000_000.0)
-        df = _make_df(20, start_price=50000.0, daily_return=0.01)
-        strategy = BuyOnDaySellLater(buy_day=0, sell_day=5)
-        result = engine.run(strategy, df, "2023-01-01", "2023-12-31")
-        if result.trades:
-            trade = result.trades[0]
-            assert trade.entry_date is not None
-            assert trade.exit_date is not None
-            assert trade.entry_price > 0
-            assert trade.exit_price > 0
-            assert trade.shares > 0
-            assert trade.shares % 100 == 0
-
-
-# ==============================================================================
-# Tests: Edge Cases
-# ==============================================================================
-
-
-class TestEdgeCases:
-    def test_single_day_in_range(self):
-        """Should handle a single day in the date range."""
-        engine = BacktestEngine()
-        dates = pd.date_range("2023-01-02", periods=1, freq="B")
-        df = pd.DataFrame({
-            "time": dates,
-            "open": [50000],
-            "high": [51000],
-            "low": [49000],
-            "close": [50500],
-            "volume": [1_000_000],
-        })
-        result = engine.run(AlwaysBuyStrategy(), df, "2023-01-01", "2023-12-31")
-        assert result.total_return_pct == 0.0
-        assert len(result.equity_curve) == 1
-
-    def test_datetime_index_instead_of_time_column(self):
-        """Should work with DatetimeIndex instead of 'time' column."""
-        engine = BacktestEngine(initial_capital=10_000_000.0)
-        dates = pd.date_range("2023-01-02", periods=10, freq="B")
-        df = pd.DataFrame(
-            {
-                "open": [50000] * 10,
-                "high": [51000] * 10,
-                "low": [49000] * 10,
-                "close": [50000 + i * 100 for i in range(10)],
-                "volume": [1_000_000] * 10,
-            },
-            index=dates,
+    def test_auto_backtest_skips_invalid_symbols(self, multi_symbol_csv):
+        """Auto backtest phải bỏ qua symbols không có data (Req 7.4)."""
+        worker = BacktestEngineWorker(data_dir=multi_symbol_csv)
+        result = worker.run_auto(
+            symbols=["AAA", "INVALID1", "BBB", "INVALID2"], cycle_number=1
         )
-        strategy = BuyOnDaySellLater(buy_day=0, sell_day=5)
-        result = engine.run(strategy, df, "2023-01-01", "2023-12-31")
-        # Should run without errors
-        assert result.equity_curve is not None
-
-    def test_insufficient_capital_for_lot(self):
-        """If capital is too low for even 1 lot, no trade should execute."""
-        engine = BacktestEngine(initial_capital=1000.0)  # Only 1000 VND
-        df = _make_df(20, start_price=50000.0)
-        result = engine.run(BuyThenSellStrategy(), df, "2023-01-01", "2023-12-31")
-        assert len(result.trades) == 0
-
-
-# ==============================================================================
-# Tests: Strategy Comparison Framework
-# ==============================================================================
-
-
-class TestCompareStrategies:
-    """Tests for compare_strategies() method."""
-
-    def test_compare_returns_comparison_result(self):
-        """compare_strategies should return a ComparisonResult dataclass."""
-        engine = BacktestEngine(initial_capital=10_000_000.0)
-        df = _make_df(20, start_price=50000.0, daily_return=0.01)
-
-        strategies = {"buy_then_sell": BuyThenSellStrategy()}
-        result = engine.compare_strategies(
-            strategies, df, "2023-01-01", "2023-12-31"
-        )
-        assert isinstance(result, ComparisonResult)
-
-    def test_compare_identical_parameters(self):
-        """All strategies should be evaluated with the same parameters."""
-        engine = BacktestEngine(initial_capital=50_000_000.0)
-        df = _make_df(20, start_price=50000.0, daily_return=0.01)
-
-        strategies = {
-            "buy_then_sell": BuyThenSellStrategy(),
-        }
-        result = engine.compare_strategies(
-            strategies, df, "2023-01-01", "2023-12-31"
-        )
-        assert result.date_range_start == "2023-01-01"
-        assert result.date_range_end == "2023-12-31"
-        assert result.initial_capital == 50_000_000.0
-
-    def test_compare_multiple_strategies(self):
-        """Should run backtest for each strategy and collect results."""
-        engine = BacktestEngine(initial_capital=10_000_000.0)
-        df = _make_df(20, start_price=50000.0, daily_return=0.01)
-
-        strategies = {
-            "strategy_a": BuyThenSellStrategy(),
-            "strategy_b": BuyOnDaySellLater(buy_day=0, sell_day=5),
-        }
-        result = engine.compare_strategies(
-            strategies, df, "2023-01-01", "2023-12-31"
-        )
-        # Both strategies generate BUY and SELL signals
-        assert "strategy_a" in result.results
-        assert "strategy_b" in result.results
-        assert isinstance(result.results["strategy_a"], BacktestResult)
-        assert isinstance(result.results["strategy_b"], BacktestResult)
-
-    def test_compare_excludes_hold_only_strategy(self):
-        """A strategy that only generates HOLD should be excluded."""
-        engine = BacktestEngine(initial_capital=10_000_000.0)
-        df = _make_df(20, start_price=50000.0, daily_return=0.01)
-
-        strategies = {
-            "active": BuyThenSellStrategy(),
-            "passive": AlwaysHoldStrategy(),
-        }
-        result = engine.compare_strategies(
-            strategies, df, "2023-01-01", "2023-12-31"
-        )
-        assert "active" in result.results
-        assert "passive" not in result.results
-        assert "passive" in result.excluded_strategies
-        assert "passive" in result.exclusion_reasons
-        assert "BUY" in result.exclusion_reasons["passive"]
-        assert "SELL" in result.exclusion_reasons["passive"]
-
-    def test_compare_excludes_buy_only_strategy(self):
-        """A strategy that only generates BUY (no SELL) should be excluded."""
-        engine = BacktestEngine(initial_capital=10_000_000.0)
-        df = _make_df(20, start_price=50000.0, daily_return=0.01)
-
-        strategies = {
-            "buy_only": AlwaysBuyStrategy(),
-        }
-        result = engine.compare_strategies(
-            strategies, df, "2023-01-01", "2023-12-31"
-        )
-        assert "buy_only" not in result.results
-        assert "buy_only" in result.excluded_strategies
-        assert "SELL" in result.exclusion_reasons["buy_only"]
-
-    def test_compare_excludes_sell_only_strategy(self):
-        """A strategy that only generates SELL (no BUY) should be excluded."""
-        engine = BacktestEngine(initial_capital=10_000_000.0)
-        df = _make_df(20, start_price=50000.0, daily_return=0.01)
-
-        strategies = {
-            "sell_only": AlwaysSellStrategy(),
-        }
-        result = engine.compare_strategies(
-            strategies, df, "2023-01-01", "2023-12-31"
-        )
-        assert "sell_only" not in result.results
-        assert "sell_only" in result.excluded_strategies
-        assert "BUY" in result.exclusion_reasons["sell_only"]
-
-    def test_compare_all_excluded_returns_empty_results(self):
-        """If all strategies are excluded, results dict should be empty."""
-        engine = BacktestEngine(initial_capital=10_000_000.0)
-        df = _make_df(20, start_price=50000.0)
-
-        strategies = {
-            "hold": AlwaysHoldStrategy(),
-            "buy_only": AlwaysBuyStrategy(),
-        }
-        result = engine.compare_strategies(
-            strategies, df, "2023-01-01", "2023-12-31"
-        )
-        assert len(result.results) == 0
-        assert len(result.excluded_strategies) == 2
-
-    def test_compare_empty_strategies_dict(self):
-        """Passing empty strategies dict should return empty ComparisonResult."""
-        engine = BacktestEngine(initial_capital=10_000_000.0)
-        df = _make_df(20, start_price=50000.0)
-
-        result = engine.compare_strategies({}, df, "2023-01-01", "2023-12-31")
-        assert len(result.results) == 0
-        assert len(result.excluded_strategies) == 0
-
-    def test_compare_strategies_same_capital(self):
-        """Each strategy should be backtested with the same initial capital."""
-        engine = BacktestEngine(initial_capital=25_000_000.0)
-        df = _make_df(20, start_price=50000.0, daily_return=0.01)
-
-        strategies = {
-            "a": BuyOnDaySellLater(buy_day=0, sell_day=5),
-            "b": BuyOnDaySellLater(buy_day=1, sell_day=6),
-        }
-        result = engine.compare_strategies(
-            strategies, df, "2023-01-01", "2023-12-31"
-        )
-        assert result.initial_capital == 25_000_000.0
-        # Both should be included since they generate both BUY and SELL
-        assert "a" in result.results
-        assert "b" in result.results
+        assert "AAA" in result.symbols_tested
+        assert "BBB" in result.symbols_tested
+        assert "INVALID1" not in result.symbols_tested
+        assert "INVALID2" not in result.symbols_tested
+        assert len(result.symbols_tested) == 2

@@ -44,11 +44,19 @@ INDICATOR_COLUMNS = [
     "Ulcer_14",
     # Volume (9)
     "OBV", "MFI", "CMF", "VWAP", "ADI", "FI", "VPT", "EOM", "NVI",
+    # Wyckoff / Volume-Price Analysis (5)
+    "WK_effort_result", "WK_vol_climax", "WK_spread_pos", "WK_spring", "WK_obv_slope",
+    # Value Investing Proxies (6)
+    "VAL_mean_reversion", "VAL_52w_position", "VAL_drawdown",
+    "VAL_recovery_ratio", "VAL_vol_contraction", "VAL_smart_accumulation",
+    # Market Context — VNINDEX + VN30 (6)
+    "MKT_vni_ret5", "MKT_vni_vol_ratio", "MKT_vs_vni",
+    "MKT_vn30_ret5", "MKT_vn30_vol_ratio", "MKT_vs_vn30",
 ]
 
 OHLCV_COLUMNS = ["open", "high", "low", "close", "volume"]
 NUM_OHLCV = 5
-NUM_INDICATORS = len(INDICATOR_COLUMNS)  # 56
+NUM_INDICATORS = len(INDICATOR_COLUMNS)  # 73 (56 cũ + 5 Wyckoff + 6 Value + 6 Market Context)
 
 
 # ---------------------------------------------------------------------------
@@ -306,7 +314,7 @@ def _json_safe_to_ndarray(data: list) -> np.ndarray:
 # ---------------------------------------------------------------------------
 
 ALL_FEATURE_COLUMNS = OHLCV_COLUMNS + INDICATOR_COLUMNS
-NUM_FEATURES = len(ALL_FEATURE_COLUMNS)  # 5 OHLCV + 56 indicators = 61
+NUM_FEATURES = len(ALL_FEATURE_COLUMNS)  # 5 OHLCV + 73 indicators = 78
 
 
 # ---------------------------------------------------------------------------

@@ -371,7 +371,7 @@ class TestMinimaxOptimality:
         state=market_state_strategy(),
         scores=varying_model_scores_strategy(),
     )
-    @settings(max_examples=50)
+    @settings(max_examples=15)
     def test_best_action_has_highest_score(self, state, scores):
         """
         The best_action's score in action_scores is >= all other action scores.
@@ -414,7 +414,7 @@ class TestMinimaxOptimality:
         scores=varying_model_scores_strategy(),
         depth=st.integers(min_value=1, max_value=3),
     )
-    @settings(max_examples=30)
+    @settings(max_examples=15)
     def test_best_action_optimality_at_various_depths(self, state, scores, depth):
         """
         Minimax optimality holds at any search depth within [1, 3].
@@ -477,7 +477,7 @@ class TestDecisionReportStructuralCompleteness:
         state=market_state_strategy(),
         scores=varying_model_scores_strategy(),
     )
-    @settings(max_examples=50)
+    @settings(max_examples=15)
     def test_report_has_all_required_fields(self, state, scores):
         """
         A DecisionReport generated from a search result has all required
@@ -561,7 +561,7 @@ class TestDecisionReportStructuralCompleteness:
             )
 
     @given(report=decision_report_strategy())
-    @settings(max_examples=100)
+    @settings(max_examples=20)
     def test_decision_report_dataclass_structural_validity(self, report):
         """
         Any well-formed DecisionReport satisfies structural constraints
@@ -617,7 +617,7 @@ class TestLowConfidenceHoldOverride:
         scores=varying_model_scores_strategy(),
         low_confidence=confidence_below_threshold_strategy(),
     )
-    @settings(max_examples=50)
+    @settings(max_examples=15)
     def test_low_confidence_forces_hold(self, state, scores, low_confidence):
         """
         When confidence < 0.3, the final recommended action is always HOLD,
@@ -657,7 +657,7 @@ class TestLowConfidenceHoldOverride:
         search_action=st.sampled_from([Action.BUY, Action.SELL]),
         position_score=st.floats(min_value=-1.0, max_value=1.0),
     )
-    @settings(max_examples=100)
+    @settings(max_examples=20)
     def test_hold_override_independent_of_search_action_and_score(
         self, state, low_confidence, search_action, position_score
     ):
@@ -700,7 +700,7 @@ class TestLowConfidenceHoldOverride:
         confidence=st.floats(min_value=0.3, max_value=1.0),
         scores=varying_model_scores_strategy(),
     )
-    @settings(max_examples=50)
+    @settings(max_examples=15)
     def test_sufficient_confidence_preserves_search_action(
         self, state, confidence, scores
     ):

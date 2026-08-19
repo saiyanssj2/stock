@@ -1,4 +1,48 @@
-*.csv
+# === Python ===
 __pycache__/
 *.pyc
+*.pyo
+*.pyd
+*.egg-info/
+.kiro/specs
+dist/
+build/
+*.egg
+
+# === Data ===
+*.csv
+
+# === IDE & OS ===
+.vscode/
+.idea/
+*.swp
+*.swo
+Thumbs.db
+.DS_Store
+
+# === Streamlit ===
 .streamlit/
+
+# === Test artifacts ===
+.pytest_cache/
+.hypothesis/
+tmp_test/
+_tmp_tests/
+pytest_stderr.txt
+pytest_stdout.txt
+test_results.txt
+htmlcov/
+.coverage
+coverage.xml
+
+# === Project specific ===
+_backup_before_split/
+done/
+*.log
+
+# === CodeGraph ===
+.codegraph/
+
+# === Misc junk files ===
+$null
+t1

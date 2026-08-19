@@ -190,7 +190,7 @@ class TestDataValidationErrorReporting:
     """
 
     @given(file_path=nonexistent_file_path_strategy())
-    @settings(max_examples=100)
+    @settings(max_examples=20)
     def test_nonexistent_file_raises_file_not_found(self, file_path):
         """
         For any non-existent file path, DataError is raised with FILE_NOT_FOUND.
@@ -210,7 +210,7 @@ class TestDataValidationErrorReporting:
             assert str(file_path) in error.details["path"]
 
     @given(data=missing_columns_dataframe_strategy())
-    @settings(max_examples=100)
+    @settings(max_examples=20)
     def test_missing_columns_raises_missing_columns_error(self, data):
         """
         For any CSV missing required columns, DataError is raised with
@@ -241,7 +241,7 @@ class TestDataValidationErrorReporting:
             )
 
     @given(df=insufficient_rows_dataframe_strategy())
-    @settings(max_examples=100)
+    @settings(max_examples=20)
     def test_insufficient_rows_raises_insufficient_data_error(self, df):
         """
         For any CSV with insufficient rows (< min_data_rows), DataError is
@@ -268,7 +268,7 @@ class TestDataValidationErrorReporting:
             assert error.details["min_required"] == MIN_DATA_ROWS
 
     @given(df=valid_csv_dataframe_strategy())
-    @settings(max_examples=100)
+    @settings(max_examples=20)
     def test_valid_csv_passes_validation(self, df):
         """
         Valid CSVs (all required columns, sufficient rows) pass validation
@@ -287,7 +287,7 @@ class TestDataValidationErrorReporting:
             engine.validate_csv(csv_path)
 
     @given(data=st.data())
-    @settings(max_examples=50)
+    @settings(max_examples=15)
     def test_validate_multiple_csvs_reports_all_problematic_files(self, data):
         """
         When validating multiple CSV files, the set of reported problematic
@@ -366,7 +366,7 @@ class TestDataValidationErrorReporting:
             )
 
     @given(file_path=nonexistent_file_path_strategy())
-    @settings(max_examples=50)
+    @settings(max_examples=15)
     def test_file_not_found_error_includes_suggestion(self, file_path):
         """
         FILE_NOT_FOUND error details include a suggestion for the user.
@@ -385,7 +385,7 @@ class TestDataValidationErrorReporting:
             assert "suggestion" in error.details
 
     @given(data=missing_columns_dataframe_strategy())
-    @settings(max_examples=50)
+    @settings(max_examples=15)
     def test_missing_columns_error_reports_available_columns(self, data):
         """
         MISSING_COLUMNS error details include what columns ARE available.

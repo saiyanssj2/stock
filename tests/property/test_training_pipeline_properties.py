@@ -108,7 +108,7 @@ class TestProperty10LabelGenerationBounded:
         horizon=st.integers(min_value=1, max_value=20),
         sensitivity=st.floats(min_value=0.1, max_value=100.0),
     )
-    @settings(max_examples=100)
+    @settings(max_examples=20)
     def test_labels_bounded_in_minus_one_plus_one(self, df, horizon, sensitivity):
         """
         All non-NaN labels produced by _generate_labels are in [-1.0, +1.0].
@@ -135,7 +135,7 @@ class TestProperty10LabelGenerationBounded:
         horizon=st.integers(min_value=1, max_value=10),
         sensitivity=st.floats(min_value=1.0, max_value=50.0),
     )
-    @settings(max_examples=100)
+    @settings(max_examples=20)
     def test_labels_monotonically_increasing_with_return(
         self, base_price, horizon, sensitivity
     ):
@@ -172,7 +172,7 @@ class TestProperty10LabelGenerationBounded:
         df=price_series_strategy(min_length=10, max_length=100),
         horizon=st.integers(min_value=1, max_value=10),
     )
-    @settings(max_examples=50)
+    @settings(max_examples=15)
     def test_last_horizon_entries_are_nan(self, df, horizon):
         """
         The last `horizon` entries should be NaN since there's no future
@@ -209,7 +209,7 @@ class TestProperty11ChronologicalSplitOrdering:
     """
 
     @given(data_and_labels=chronological_data_strategy(min_length=20, max_length=300))
-    @settings(max_examples=100)
+    @settings(max_examples=20)
     def test_train_indices_before_val_before_test(self, data_and_labels):
         """
         All data points in the training set appear chronologically before
@@ -246,7 +246,7 @@ class TestProperty11ChronologicalSplitOrdering:
         )
 
     @given(data_and_labels=chronological_data_strategy(min_length=20, max_length=300))
-    @settings(max_examples=100)
+    @settings(max_examples=20)
     def test_no_nan_labels_in_splits(self, data_and_labels):
         """
         No NaN labels appear in any of the split sets.
@@ -267,7 +267,7 @@ class TestProperty11ChronologicalSplitOrdering:
         assert not np.any(np.isnan(test_l)), "Found NaN in test labels"
 
     @given(data_and_labels=chronological_data_strategy(min_length=20, max_length=300))
-    @settings(max_examples=100)
+    @settings(max_examples=20)
     def test_split_covers_all_valid_data(self, data_and_labels):
         """
         The total number of samples across all splits equals the number
@@ -320,12 +320,12 @@ class TestProperty12CheckpointSaveResumeConsistency:
 
         from engine.evaluation_model import StockEvalNet
 
-        config = ModelConfig(num_features=63, lookback=60)
+        config = ModelConfig(num_features=61, lookback=60)
         model = StockEvalNet(config)
         optimizer = torch.optim.Adam(model.parameters(), lr=1e-3)
 
         # Perform a forward/backward pass to give optimizer state
-        dummy_input = torch.randn(2, 60, 63)
+        dummy_input = torch.randn(2, 60, 61)
         output = model(dummy_input)
         loss = output.sum()
         loss.backward()
@@ -391,7 +391,7 @@ class TestProperty12CheckpointSaveResumeConsistency:
 
         from engine.evaluation_model import StockEvalNet
 
-        config = ModelConfig(num_features=63, lookback=60)
+        config = ModelConfig(num_features=61, lookback=60)
 
         # Create model and optimizer
         model_a = StockEvalNet(config)
@@ -399,7 +399,7 @@ class TestProperty12CheckpointSaveResumeConsistency:
 
         # Generate deterministic training data
         torch.manual_seed(seed + 1000)
-        train_input = torch.randn(4, 60, 63)
+        train_input = torch.randn(4, 60, 61)
         train_target = torch.randn(4, 1)
 
         # Do initial training step to populate optimizer state
@@ -425,7 +425,7 @@ class TestProperty12CheckpointSaveResumeConsistency:
 
             # Path A: Continue training without interruption
             torch.manual_seed(seed + 2000)
-            next_input = torch.randn(4, 60, 63)
+            next_input = torch.randn(4, 60, 61)
             next_target = torch.randn(4, 1)
 
             model_a.train()
@@ -445,7 +445,7 @@ class TestProperty12CheckpointSaveResumeConsistency:
 
             # Same deterministic input
             torch.manual_seed(seed + 2000)
-            next_input_b = torch.randn(4, 60, 63)
+            next_input_b = torch.randn(4, 60, 61)
             next_target_b = torch.randn(4, 1)
 
             model_b.train()

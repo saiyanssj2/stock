@@ -28,8 +28,8 @@ class TestTCNBlock:
 
     def test_output_shape_different_channels(self):
         """TCNBlock with different in/out channels changes channel dim only."""
-        block = TCNBlock(63, 128, kernel_size=3, dilation=1)
-        x = torch.randn(2, 63, 60)
+        block = TCNBlock(61, 128, kernel_size=3, dilation=1)
+        x = torch.randn(2, 61, 60)
         y = block(x)
         assert y.shape == (2, 128, 60)
 
@@ -48,23 +48,23 @@ class TestTCNBlock:
 
     def test_residual_with_conv1x1(self):
         """When in_ch != out_ch, residual uses 1x1 Conv1d."""
-        block = TCNBlock(63, 128)
+        block = TCNBlock(61, 128)
         assert isinstance(block.residual, torch.nn.Conv1d)
         assert block.residual.kernel_size == (1,)
 
     def test_no_nan_in_output(self):
         """TCNBlock output should not contain NaN for valid input."""
-        block = TCNBlock(63, 128, kernel_size=3, dilation=2)
+        block = TCNBlock(61, 128, kernel_size=3, dilation=2)
         block.eval()
-        x = torch.randn(4, 63, 60)
+        x = torch.randn(4, 61, 60)
         with torch.no_grad():
             y = block(x)
         assert not torch.isnan(y).any()
 
     def test_gradient_flow(self):
         """Gradients flow through TCNBlock."""
-        block = TCNBlock(63, 128)
-        x = torch.randn(2, 63, 60, requires_grad=True)
+        block = TCNBlock(61, 128)
+        x = torch.randn(2, 61, 60, requires_grad=True)
         y = block(x)
         loss = y.sum()
         loss.backward()
@@ -90,7 +90,7 @@ class TestStockEvalNet:
 
     def test_output_shape_single(self, model):
         """Single sample produces output shape (1, 1)."""
-        x = torch.randn(1, 60, 63)
+        x = torch.randn(1, 60, 61)
         with torch.no_grad():
             y = model(x)
         assert y.shape == (1, 1)
@@ -98,14 +98,14 @@ class TestStockEvalNet:
     def test_output_shape_batch(self, model):
         """Batch of samples produces correct output shape."""
         for batch_size in [1, 4, 16, 50]:
-            x = torch.randn(batch_size, 60, 63)
+            x = torch.randn(batch_size, 60, 61)
             with torch.no_grad():
                 y = model(x)
             assert y.shape == (batch_size, 1)
 
     def test_output_bounded(self, model):
         """Output values are in [-1.0, +1.0] due to Tanh."""
-        x = torch.randn(50, 60, 63)
+        x = torch.randn(50, 60, 61)
         with torch.no_grad():
             y = model(x)
         assert (y >= -1.0).all(), f"Min value: {y.min().item()}"
@@ -114,13 +114,13 @@ class TestStockEvalNet:
     def test_output_bounded_extreme_input(self, model):
         """Output bounded even with extreme input values."""
         # Very large values
-        x_large = torch.randn(10, 60, 63) * 1000
+        x_large = torch.randn(10, 60, 61) * 1000
         with torch.no_grad():
             y = model(x_large)
         assert (y >= -1.0).all() and (y <= 1.0).all()
 
         # All zeros
-        x_zero = torch.zeros(5, 60, 63)
+        x_zero = torch.zeros(5, 60, 61)
         with torch.no_grad():
             y = model(x_zero)
         assert (y >= -1.0).all() and (y <= 1.0).all()
@@ -135,14 +135,14 @@ class TestStockEvalNet:
 
     def test_no_nan_in_output(self, model):
         """Model output should not contain NaN for valid input."""
-        x = torch.randn(8, 60, 63)
+        x = torch.randn(8, 60, 61)
         with torch.no_grad():
             y = model(x)
         assert not torch.isnan(y).any()
 
     def test_deterministic_eval_mode(self, model):
         """Model in eval mode produces deterministic outputs."""
-        x = torch.randn(4, 60, 63)
+        x = torch.randn(4, 60, 61)
         with torch.no_grad():
             y1 = model(x)
             y2 = model(x)
@@ -153,7 +153,7 @@ class TestStockEvalNet:
         config = ModelConfig()
         net = StockEvalNet(config)
         net.train()
-        x = torch.randn(4, 60, 63, requires_grad=True)
+        x = torch.randn(4, 60, 61, requires_grad=True)
         y = net(x)
         loss = y.sum()
         loss.backward()
@@ -180,7 +180,7 @@ class TestStockEvalNet:
     def test_default_config_used_when_none(self):
         """If config is None, default ModelConfig is used."""
         net = StockEvalNet(config=None)
-        assert net.config.num_features == 63
+        assert net.config.num_features == 61
         assert net.config.lookback == 60
 
     def test_count_parameters_method(self, model):
