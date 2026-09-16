@@ -209,75 +209,154 @@ def _render_portfolio_summary(portfolio: PortfolioState) -> None:
             delta_color=delta_color,
         )
 
-    # Nút cài đặt vốn ban đầu
-    with st.expander("⚙️ Cài đặt vốn ban đầu"):
-        new_capital = st.number_input(
-            "Vốn ban đầu (VND)",
-            min_value=0.0,
-            value=portfolio.initial_capital,
-            step=100_000_000.0,
-            format="%.0f",
-            key="initial_capital_input",
-        )
-        if st.button("💾 Lưu vốn ban đầu", key="save_capital_btn"):
-            portfolio.initial_capital = new_capital
-            portfolio.cash = new_capital
-            portfolio.holdings = []
-            save_portfolio(portfolio)
-            st.success("✅ Đã cập nhật vốn ban đầu và reset portfolio!")
-            st.rerun()
+
 
 
 def _render_holdings_table(portfolio: PortfolioState) -> None:
     """
-    Render Section 2: Bảng holdings hiện tại + form nhập thủ công.
+    Render Section 2: Bảng holdings hiện tại + form nhập tài sản.
 
     Hiển thị: Mã | Số CP | Giá mua | Giá hiện tại | Lãi/Lỗ | Ngày mua | Nút Bán
     """
     st.subheader("📊 Cổ phiếu đang nắm giữ")
 
-    # Form nhập vị thế thủ công
-    with st.expander("➕ Thêm vị thế thủ công (đã mua ngoài app)"):
-        col_sym, col_shares, col_price, col_date = st.columns(4)
-        with col_sym:
-            manual_symbol = st.text_input("Mã CK", key="manual_symbol", placeholder="VD: FPT").strip().upper()
-        with col_shares:
-            manual_shares = st.number_input("Số CP", min_value=100, step=100, value=100, key="manual_shares")
-        with col_price:
-            manual_price = st.number_input("Giá mua (₫)", min_value=1000.0, step=1000.0, value=50000.0, format="%.0f", key="manual_price")
-        with col_date:
-            manual_date = st.date_input("Ngày mua", value=date.today(), key="manual_date")
+    # Form nhập tài sản (tiền mặt + vị thế) — lưu 1 lần
+    with st.expander("⚙️ Cài đặt tài sản hiện có"):
+        st.caption("Nhập tiền mặt và các vị thế cổ phiếu hiện có, sau đó **Lưu tất cả** một lần.")
 
-        if st.button("💾 Lưu vị thế", key="save_manual_holding"):
-            if manual_symbol and manual_shares >= 100:
-                # Giá nhập là VND thực, chuyển về đơn vị 1000 VND
-                price_1000 = manual_price / 1000.0
-                existing = next((h for h in portfolio.holdings if h.symbol == manual_symbol), None)
-                if existing is not None:
-                    # Cập nhật giá trung bình
-                    total_shares = existing.shares + manual_shares
-                    existing.buy_price = (
-                        (existing.buy_price * existing.shares + price_1000 * manual_shares) / total_shares
-                    )
-                    existing.shares = total_shares
-                    existing.buy_date = manual_date
-                else:
-                    portfolio.holdings.append(
-                        PortfolioHolding(
-                            symbol=manual_symbol,
-                            shares=manual_shares,
-                            buy_price=price_1000,
-                            buy_date=manual_date,
+        # --- Tiền mặt ---
+        st.markdown("**💰 Tiền mặt**")
+        # Khởi tạo session state cho tiền mặt
+        if "_setup_cash" not in st.session_state:
+            st.session_state["_setup_cash"] = portfolio.cash
+
+        new_cash = st.number_input(
+            "Tiền mặt hiện có (₫)",
+            min_value=0.0,
+            value=st.session_state["_setup_cash"],
+            step=1_000_000.0,
+            format="%.0f",
+            key="setup_cash_input",
+        )
+        st.session_state["_setup_cash"] = new_cash
+
+        st.divider()
+
+        # --- Danh sách vị thế ---
+        st.markdown("**📈 Vị thế cổ phiếu**")
+
+        # Khởi tạo session state cho danh sách vị thế đang nhập
+        if "_setup_holdings" not in st.session_state:
+            # Load từ portfolio hiện tại
+            st.session_state["_setup_holdings"] = [
+                {
+                    "symbol": h.symbol,
+                    "shares": h.shares,
+                    "price": h.buy_price * 1000,  # Chuyển về VND
+                    "date": h.buy_date,
+                }
+                for h in portfolio.holdings
+            ]
+
+        holdings_list = st.session_state["_setup_holdings"]
+
+        # Hiển thị các vị thế đã nhập
+        to_remove = []
+        for idx, h in enumerate(holdings_list):
+            cols = st.columns([1.2, 1, 1.2, 1.2, 0.5])
+            with cols[0]:
+                h["symbol"] = st.text_input(
+                    "Mã CK",
+                    value=h["symbol"],
+                    key=f"setup_sym_{idx}",
+                    label_visibility="collapsed" if idx > 0 else "visible",
+                ).strip().upper()
+            with cols[1]:
+                h["shares"] = st.number_input(
+                    "Số CP",
+                    min_value=1,
+                    value=h["shares"],
+                    step=1,
+                    key=f"setup_shares_{idx}",
+                    label_visibility="collapsed" if idx > 0 else "visible",
+                )
+            with cols[2]:
+                h["price"] = st.number_input(
+                    "Giá TB (₫)",
+                    min_value=100.0,
+                    value=float(h["price"]),
+                    step=100.0,
+                    format="%.2f",
+                    key=f"setup_price_{idx}",
+                    label_visibility="collapsed" if idx > 0 else "visible",
+                )
+            with cols[3]:
+                h["date"] = st.date_input(
+                    "Ngày mua",
+                    value=h["date"],
+                    key=f"setup_date_{idx}",
+                    label_visibility="collapsed" if idx > 0 else "visible",
+                )
+            with cols[4]:
+                if idx > 0:
+                    st.write("")  # Spacer cho alignment
+                if st.button("🗑️", key=f"remove_holding_{idx}", help="Xóa vị thế này"):
+                    to_remove.append(idx)
+
+        # Xóa các vị thế được đánh dấu
+        for idx in reversed(to_remove):
+            holdings_list.pop(idx)
+        if to_remove:
+            st.rerun()
+
+        # Nút thêm vị thế mới
+        if st.button("➕ Thêm vị thế", key="add_new_holding"):
+            holdings_list.append({
+                "symbol": "",
+                "shares": 100,
+                "price": 50000.0,
+                "date": date.today(),
+            })
+            st.rerun()
+
+        st.divider()
+
+        # --- Tính tổng và lưu ---
+        total_stock_value = sum(h["shares"] * h["price"] for h in holdings_list if h["symbol"])
+        total_assets = new_cash + total_stock_value
+
+        col_summary, col_save = st.columns([3, 1])
+        with col_summary:
+            st.markdown(
+                f"**Tổng tài sản:** {total_assets:,.0f}₫ "
+                f"(Tiền mặt: {new_cash:,.0f}₫ + CP: {total_stock_value:,.0f}₫)"
+            )
+        with col_save:
+            if st.button("💾 Lưu tất cả", key="save_all_assets", type="primary"):
+                # Tạo portfolio mới
+                new_holdings = []
+                for h in holdings_list:
+                    if h["symbol"] and h["shares"] > 0:
+                        new_holdings.append(
+                            PortfolioHolding(
+                                symbol=h["symbol"],
+                                shares=h["shares"],
+                                buy_price=h["price"] / 1000.0,  # Chuyển về đơn vị 1000 VND
+                                buy_date=h["date"],
+                            )
                         )
-                    )
-                # Trừ tiền mặt tương ứng
-                cost = manual_shares * manual_price
-                portfolio.cash -= cost
+
+                portfolio.cash = new_cash
+                portfolio.holdings = new_holdings
+                portfolio.initial_capital = total_assets  # Vốn ban đầu = tổng tài sản nhập vào
                 save_portfolio(portfolio)
-                st.success(f"✅ Đã thêm {manual_symbol} {manual_shares} CP, giá {manual_price:,.0f}₫")
+
+                # Clear session state
+                st.session_state.pop("_setup_cash", None)
+                st.session_state.pop("_setup_holdings", None)
+
+                st.success(f"✅ Đã lưu: {new_cash:,.0f}₫ tiền mặt + {len(new_holdings)} vị thế")
                 st.rerun()
-            else:
-                st.error("❌ Vui lòng nhập mã CK và số CP ≥ 100")
 
     if not portfolio.holdings:
         st.info("Chưa có vị thế nào. Thêm thủ công ở trên hoặc thực hiện MUA từ khuyến nghị bên dưới.")

@@ -5,6 +5,11 @@ Stage 1: Supervised Learning Pre-Training.
 Train TCN+Attention model để nhận diện market patterns.
 Label = tanh(future_return * scale) — dự đoán hướng + magnitude.
 Chronological split với embargo gap.
+
+Feature Scaling:
+- Fit global scaler trên toàn bộ training windows
+- Save scaler params để inference dùng cùng scale
+- Đảm bảo Training-Serving Consistency
 """
 
 import logging
@@ -19,6 +24,7 @@ import torch
 import torch.nn as nn
 from torch.utils.data import DataLoader, TensorDataset
 
+from engine.feature_scaler import FeatureScaler, scaler_exists
 from engine.wf_trainer.config import WFConfig
 
 logger = logging.getLogger(__name__)
@@ -43,20 +49,27 @@ class SLTrainResult:
 def build_sl_dataset(
     symbols: List[str],
     config: WFConfig,
-) -> Tuple[Optional[torch.Tensor], Optional[torch.Tensor], Optional[torch.Tensor], Optional[torch.Tensor]]:
+    scaler: Optional[FeatureScaler] = None,
+) -> Tuple[Optional[torch.Tensor], Optional[torch.Tensor], Optional[torch.Tensor], Optional[torch.Tensor], Optional[FeatureScaler]]:
     """
     Xây dựng dataset cho supervised learning.
 
     Load CSV → extract features → create sliding windows → generate labels.
     Chronological split: train / val (với embargo gap).
+    
+    Feature Scaling:
+    - Nếu scaler=None: fit global scaler trên training windows
+    - Nếu scaler có sẵn: dùng scaler đó (incremental learning)
+    - Scaler được trả về để caller có thể save
 
     Returns:
-        (train_X, train_y, val_X, val_y) hoặc (None, None, None, None) nếu thiếu data.
+        (train_X, train_y, val_X, val_y, fitted_scaler) hoặc (None, None, None, None, None) nếu thiếu data.
     """
     from engine.market_state import INDICATOR_COLUMNS, OHLCV_COLUMNS, NUM_INDICATORS
 
-    all_windows = []
+    all_windows_raw = []  # Windows chưa normalize (để fit scaler)
     all_labels = []
+    symbols_used = []
 
     for symbol in symbols:
         csv_path = Path(config.data_dir) / f"{symbol}.csv"
@@ -70,6 +83,8 @@ def build_sl_dataset(
 
         if len(df) < config.min_sessions:
             continue
+
+        symbols_used.append(symbol)
 
         # Extract features
         ohlcv = df[OHLCV_COLUMNS].values.astype(np.float64)
@@ -87,7 +102,7 @@ def build_sl_dataset(
         elif features.shape[1] > config.num_features:
             features = features[:, :config.num_features]
 
-        # NaN handling
+        # NaN handling (nhưng chưa normalize)
         features = np.nan_to_num(features, nan=0.0, posinf=0.0, neginf=0.0)
 
         # Tạo sliding windows + labels
@@ -97,13 +112,7 @@ def build_sl_dataset(
 
         for i in range(lookback, len(df) - horizon):
             window = features[i - lookback:i]  # (lookback, num_features)
-
-            # Per-window min-max normalize
-            col_min = window.min(axis=0)
-            col_max = window.max(axis=0)
-            col_range = col_max - col_min
-            col_range[col_range == 0] = 1.0
-            window_norm = (window - col_min) / col_range
+            all_windows_raw.append(window)
 
             # Label: tanh(future_return * scale)
             future_price = close_prices[i + horizon]
@@ -114,14 +123,26 @@ def build_sl_dataset(
             else:
                 label = 0.0
 
-            all_windows.append(window_norm)
             all_labels.append(label)
 
-    if not all_windows:
-        return None, None, None, None
+    if not all_windows_raw:
+        return None, None, None, None, None
+
+    # === FIT SCALER trên toàn bộ training windows (global normalization) ===
+    if scaler is None or not scaler.is_fitted:
+        scaler = FeatureScaler()
+        scaler.fit(all_windows_raw, symbols=symbols_used)
+        logger.info(f"[SL] Fitted new scaler on {len(all_windows_raw)} windows")
+    else:
+        # Incremental fit - mở rộng range nếu có data mới ngoài range
+        scaler.partial_fit(all_windows_raw, symbols=symbols_used)
+        logger.info(f"[SL] Updated scaler with {len(all_windows_raw)} new windows")
+
+    # === TRANSFORM tất cả windows dùng global scaler ===
+    all_windows_norm = [scaler.transform(w) for w in all_windows_raw]
 
     # Stack
-    X = np.array(all_windows, dtype=np.float32)
+    X = np.array(all_windows_norm, dtype=np.float32)
     y = np.array(all_labels, dtype=np.float32).reshape(-1, 1)
 
     # Chronological split: 70% train | embargo | 15% val | embargo | 15% test
@@ -145,38 +166,55 @@ def build_sl_dataset(
 
     logger.info(
         f"[SL] Dataset: train={len(train_X)}, val={len(val_X)}, "
-        f"symbols={len(symbols)}, features={config.num_features}"
+        f"symbols={len(symbols_used)}, features={config.num_features}"
     )
 
-    return train_X, train_y, val_X, val_y
+    return train_X, train_y, val_X, val_y, scaler
 
 
 def train_supervised(
     model: nn.Module,
     config: WFConfig,
     symbols: List[str],
-) -> SLTrainResult:
+    scaler: Optional[FeatureScaler] = None,
+) -> Tuple[SLTrainResult, Optional[FeatureScaler]]:
     """
     Chạy supervised pre-training.
 
     Train model trên labeled data (future return prediction).
     Dùng MSE loss, Adam optimizer, early stopping nếu val_loss không giảm.
+    
+    Feature Scaling:
+    - Fit/update scaler trên training data
+    - Save scaler params vào file để inference dùng
+    - Trả về scaler để caller có thể reuse
 
     Args:
         model: TCN+Attention model (StockEvalNet)
         config: WFConfig
         symbols: Danh sách symbols để train
+        scaler: FeatureScaler có sẵn (optional). Nếu None, tạo mới.
 
     Returns:
-        SLTrainResult với metrics
+        (SLTrainResult, fitted_scaler) với metrics và scaler đã fit
     """
     start_time = time.time()
 
-    # Build dataset
-    train_X, train_y, val_X, val_y = build_sl_dataset(symbols, config)
+    # Build dataset (scaler được fit/update bên trong)
+    train_X, train_y, val_X, val_y, fitted_scaler = build_sl_dataset(symbols, config, scaler)
     if train_X is None or len(train_X) == 0:
         logger.warning("[SL] Không đủ data để train")
-        return SLTrainResult()
+        return SLTrainResult(), scaler
+
+    # === SAVE SCALER PARAMS ===
+    if fitted_scaler is not None:
+        scaler_path = Path(config.checkpoint_dir) / "scaler_params.json"
+        fitted_scaler.save(str(scaler_path))
+        logger.info(f"[SL] Saved scaler to {scaler_path}")
+        
+        # Cũng save vào location mặc định để recommendation_engine dùng
+        from engine.feature_scaler import DEFAULT_SCALER_PATH
+        fitted_scaler.save(str(DEFAULT_SCALER_PATH))
 
     # DataLoader
     train_ds = TensorDataset(train_X, train_y)
@@ -239,4 +277,4 @@ def train_supervised(
         best_val_loss=best_val_loss,
         duration_seconds=duration,
         symbols_used=symbols,
-    )
+    ), fitted_scaler

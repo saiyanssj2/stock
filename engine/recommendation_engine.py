@@ -4,6 +4,11 @@ RecommendationEngine - Tạo khuyến nghị cổ phiếu từ model đã train.
 Scan VN30 + watchlist (data/code.txt), assign confidence score,
 sort descending, và hỗ trợ hot-swap model khi training xong.
 
+Feature Scaling Consistency:
+- Load scaler params từ file (saved lúc training)
+- Dùng CÙNG normalization với training để đảm bảo prediction nhất quán
+- Fallback về per-window normalize nếu scaler file chưa có
+
 References:
 - Req 6.1: Scan VN30 + watchlist
 - Req 6.2: Confidence score [0.0, 1.0]
@@ -22,10 +27,12 @@ from datetime import date
 from pathlib import Path
 from typing import List, Optional
 
+import numpy as np
 import pandas as pd
 
 from config.settings import CONFIDENCE_THRESHOLD, WATCHLIST_PATH
 from config.vn_market_rules import VN30_SYMBOLS
+from engine.feature_scaler import FeatureScaler, scaler_exists
 from engine.workers.vn_rules import add_trading_days, compute_buy_date, compute_earliest_sell_date
 from models.portfolio_models import PortfolioState
 from models.recommendation_models import Action, HoldingInfo, Recommendation
@@ -58,6 +65,10 @@ class RecommendationEngine:
         self._data_dir: str = data_dir or "data"
         self._model_version: str = self._compute_model_version(model_path)
         self._recommendations: List[Recommendation] = []
+        
+        # Feature scaler để đảm bảo normalization consistency
+        self._scaler: Optional[FeatureScaler] = None
+        self._scaler_loaded: bool = False
 
     def _compute_model_version(self, model_path: Optional[str]) -> str:
         """
@@ -85,15 +96,22 @@ class RecommendationEngine:
 
         VN30 luôn có sẵn từ config. Watchlist đọc từ data/code.txt.
         Nếu file watchlist không tồn tại → chỉ dùng VN30.
+        Loại trừ các chỉ số thị trường (VNINDEX, VN30, HNX, UPCOM, HNX30).
 
         Returns:
             Danh sách symbol duy nhất (không trùng lặp), sorted alphabetically
         """
+        # Các chỉ số thị trường — không phải cổ phiếu, không trade được
+        INDEX_SYMBOLS = {"VNINDEX", "VN30", "HNX", "UPCOM", "HNX30"}
+
         symbols: set[str] = set(VN30_SYMBOLS)
 
         # Đọc watchlist từ file
         watchlist_symbols = self._read_watchlist()
         symbols.update(watchlist_symbols)
+
+        # Loại trừ các chỉ số thị trường
+        symbols = symbols - INDEX_SYMBOLS
 
         return sorted(symbols)
 
@@ -277,11 +295,11 @@ class RecommendationEngine:
         """
         Predict position score cho symbol bằng ML model (StockEvalNet).
 
-        Load data CSV → extract features → normalize (CHỈ lookback window) → model forward pass.
+        Load data CSV → extract features → normalize (dùng saved scaler) → model forward pass.
         Fallback về hash-based heuristic nếu model/data không có.
 
-        QUAN TRỌNG: Normalize CHỈ trên lookback window (giống cách training normalize
-        trên từng slice riêng) để model nhận được observation đúng scale.
+        QUAN TRỌNG: Dùng CÙNG scaler params với training để đảm bảo consistency.
+        Nếu scaler file chưa có → fallback về per-window normalize + warning.
 
         Args:
             symbol: Mã cổ phiếu
@@ -290,7 +308,6 @@ class RecommendationEngine:
             Tuple (position_score [-1,1], confidence [0,1])
         """
         try:
-            import numpy as np
             import torch
             from engine.config import ModelConfig
             from engine.evaluation_model import StockEvalNet
@@ -313,8 +330,7 @@ class RecommendationEngine:
             if len(ohlcv_cols) < 5:
                 return self._stub_predict(symbol)
 
-            # === Lấy lookback dòng cuối, rồi normalize CHỈ trên window đó ===
-            # (Giống cách training normalize trên từng slice riêng)
+            # === Lấy lookback dòng cuối ===
             df_window = df.iloc[-lookback:].reset_index(drop=True)
 
             ohlcv = df_window[OHLCV_COLUMNS].values.astype(np.float64)
@@ -333,13 +349,9 @@ class RecommendationEngine:
             elif raw.shape[1] > num_features:
                 raw = raw[:, :num_features]
 
-            # Normalize CHỈ trên lookback window này
+            # === NORMALIZE dùng saved scaler (QUAN TRỌNG cho consistency) ===
             raw = np.nan_to_num(raw, nan=0.0, posinf=0.0, neginf=0.0)
-            col_min = raw.min(axis=0)
-            col_max = raw.max(axis=0)
-            col_range = col_max - col_min
-            col_range[col_range == 0] = 1.0
-            raw_norm = (raw - col_min) / col_range
+            raw_norm = self._normalize_features(raw)
 
             # Load model (cache)
             if not hasattr(self, "_ml_model") or self._ml_model is None:
@@ -370,6 +382,72 @@ class RecommendationEngine:
         except Exception as e:
             logger.debug(f"ML predict failed for {symbol}: {e}")
             return self._stub_predict(symbol)
+
+    def _normalize_features(self, raw: np.ndarray) -> np.ndarray:
+        """
+        Normalize features dùng saved scaler hoặc fallback per-window.
+        
+        Args:
+            raw: Array shape (lookback, num_features), đã xử lý NaN
+            
+        Returns:
+            Normalized array shape (lookback, num_features)
+        """
+        # Lazy load scaler (chỉ load 1 lần)
+        if not self._scaler_loaded:
+            self._load_scaler()
+        
+        if self._scaler is not None and self._scaler.is_fitted:
+            # Dùng saved scaler — CÙNG normalization với training
+            return self._scaler.transform(raw)
+        else:
+            # Fallback: per-window normalize (có thể gây inconsistency)
+            logger.debug("[Recommend] Scaler chưa có, dùng per-window normalize (fallback)")
+            col_min = raw.min(axis=0)
+            col_max = raw.max(axis=0)
+            col_range = col_max - col_min
+            col_range[col_range == 0] = 1.0
+            return ((raw - col_min) / col_range).astype(np.float32)
+    
+    def _load_scaler(self) -> None:
+        """
+        Load scaler từ file (lazy loading).
+        
+        Thử load từ engine/models/scaler_params.json.
+        Nếu không có, _scaler = None và sẽ dùng fallback.
+        """
+        self._scaler_loaded = True
+        
+        if not scaler_exists():
+            logger.warning(
+                "[Recommend] Scaler file chưa có. Recommendation sẽ dùng per-window normalize. "
+                "Chạy training ít nhất 1 cycle để tạo scaler."
+            )
+            self._scaler = None
+            return
+        
+        try:
+            self._scaler = FeatureScaler.load()
+            logger.info(
+                f"[Recommend] Loaded scaler: {self._scaler.params.num_features} features, "
+                f"fitted at {self._scaler.params.fitted_at}"
+            )
+        except Exception as e:
+            logger.warning(f"[Recommend] Không load được scaler ({e}), dùng fallback")
+            self._scaler = None
+    
+    def reload_scaler(self) -> bool:
+        """
+        Force reload scaler từ file.
+        
+        Gọi sau khi training xong để dùng scaler mới.
+        
+        Returns:
+            True nếu load thành công
+        """
+        self._scaler_loaded = False
+        self._load_scaler()
+        return self._scaler is not None and self._scaler.is_fitted
 
     def _get_latest_close_price(self, symbol: str) -> Optional[float]:
         """
@@ -439,10 +517,17 @@ class RecommendationEngine:
         Re-generate recommendations.
 
         Gọi sau khi data update hoặc model hot-swap.
-        Load lại model nếu model_path thay đổi, rồi scan lại toàn bộ symbols.
+        Load lại model và scaler nếu có thay đổi, rồi scan lại toàn bộ symbols.
         """
         # Cập nhật model version (hỗ trợ hot-swap)
         self._model_version = self._compute_model_version(self._model_path)
+        
+        # Reload scaler để dùng params mới nhất từ training
+        self.reload_scaler()
+        
+        # Clear cached model để force reload
+        self._ml_model = None
+        
         # Re-scan tất cả symbols
         self.scan_symbols()
 

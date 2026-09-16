@@ -69,6 +69,24 @@ def _clear_stop_flag() -> None:
     stop_file.unlink(missing_ok=True)
 
 
+def force_reset_status() -> None:
+    """
+    Force reset status về done (Stop Immediate).
+    
+    Dùng khi:
+    - Pipeline bị treo/stuck
+    - Đã tắt app nhưng status vẫn "running"
+    - Muốn dừng ngay không chờ cycle hoàn thành
+    """
+    _write_status({
+        "state": "done",
+        "message": "Stopped immediately by user",
+        "timestamp": datetime.now().isoformat(),
+    })
+    _clear_stop_flag()
+    _log("  STOP IMMEDIATE: status reset to done")
+
+
 def run_pipeline() -> None:
     """
     Chạy pipeline loop: update data → Walk-Forward cycle → lặp lại.

@@ -26,6 +26,7 @@ import numpy as np
 import pandas as pd
 import torch
 
+from engine.feature_scaler import FeatureScaler
 from engine.wf_trainer.config import WFConfig
 from engine.wf_trainer.rl_agent import PolicyNetwork, RLTrainResult, train_rl
 from engine.wf_trainer.rl_env import NUM_ACTIONS, PRICE_SCALE, TradingEnv
@@ -121,7 +122,19 @@ def run_one_cycle(
         except Exception as e:
             _log(f"  Không load được checkpoint ({e}), train from scratch")
 
-    sl_result = train_supervised(model, config, train_symbols)
+    # Load existing scaler nếu có (để incremental fit)
+    scaler_path = Path(config.checkpoint_dir) / "scaler_params.json"
+    if scaler_path.exists():
+        try:
+            existing_scaler = FeatureScaler.load(str(scaler_path))
+            _log("  Loaded existing scaler for incremental fit")
+        except Exception as e:
+            _log(f"  Không load được scaler ({e}), sẽ fit mới")
+            existing_scaler = None
+    else:
+        existing_scaler = None
+
+    sl_result, fitted_scaler = train_supervised(model, config, train_symbols, scaler=existing_scaler)
     _log(f"  SL done: {sl_result.epochs_completed} epochs, "
          f"val_loss={sl_result.final_val_loss:.4f}")
 

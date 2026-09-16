@@ -1,6 +1,6 @@
 """
 Unit tests cho app.py router và navigation structure.
-Kiểm tra cấu hình pages, imports, và status bar integration.
+Kiểm tra cấu hình pages, imports.
 """
 import ast
 import importlib
@@ -46,13 +46,6 @@ class TestAppStructure:
         assert "st.navigation" in source
         assert "st.Page" in source
 
-    def test_app_py_imports_status_bar(self) -> None:
-        """app.py phải import render_status_bar."""
-        app_path = os.path.join(PROJECT_ROOT, "app.py")
-        with open(app_path, encoding="utf-8") as f:
-            source = f.read()
-        assert "render_status_bar" in source
-
     def test_app_py_defines_all_required_pages(self) -> None:
         """app.py phải define đủ 4 pages: Training, Backtest, Recommendations, Settings."""
         app_path = os.path.join(PROJECT_ROOT, "app.py")
@@ -94,34 +87,3 @@ class TestPageFiles:
         with open(full_path, encoding="utf-8") as f:
             source = f.read()
         assert "import streamlit" in source or "from streamlit" in source
-
-
-class TestStatusBar:
-    """Test status bar component."""
-
-    def test_status_bar_file_exists(self) -> None:
-        """status_bar.py phải tồn tại."""
-        path = os.path.join(PROJECT_ROOT, "ui", "components", "status_bar.py")
-        assert os.path.exists(path)
-
-    def test_status_bar_valid_syntax(self) -> None:
-        """status_bar.py phải có syntax hợp lệ."""
-        path = os.path.join(PROJECT_ROOT, "ui", "components", "status_bar.py")
-        with open(path, encoding="utf-8") as f:
-            source = f.read()
-        ast.parse(source)
-
-    def test_status_bar_importable(self) -> None:
-        """render_status_bar phải importable."""
-        # Thêm project root vào sys.path nếu chưa có
-        if PROJECT_ROOT not in sys.path:
-            sys.path.insert(0, PROJECT_ROOT)
-        from ui.components.status_bar import render_status_bar
-        assert callable(render_status_bar)
-
-    def test_status_bar_has_render_function(self) -> None:
-        """Module phải export hàm render_status_bar."""
-        path = os.path.join(PROJECT_ROOT, "ui", "components", "status_bar.py")
-        with open(path, encoding="utf-8") as f:
-            source = f.read()
-        assert "def render_status_bar" in source

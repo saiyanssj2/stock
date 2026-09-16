@@ -1,14 +1,14 @@
 {
-  "cash": 17634700.0,
-  "initial_capital": 700000000.0,
+  "cash": 1355737.0,
+  "initial_capital": 662387017.0,
   "created_at": "2026-06-24T18:38:26.013944",
-  "last_updated": "2026-07-06T17:56:04.369166",
+  "last_updated": "2026-08-23T21:00:59.574990",
   "holdings": [
     {
       "symbol": "VIX",
-      "shares": 40000,
-      "buy_price": 17.0,
-      "buy_date": "2026-03-12"
+      "shares": 46683,
+      "buy_price": 14.16,
+      "buy_date": "2026-03-30"
     }
   ]
 }

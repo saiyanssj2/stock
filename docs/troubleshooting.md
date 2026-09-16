@@ -149,3 +149,80 @@ policy.load_state_dict(...)
 - RL Policy có 2 mode: với backbone (TCN) và fallback (FC)
 - Khi training dùng backbone → inference PHẢI dùng backbone
 - Load state_dict KHÔNG tự động restore backbone reference
+
+
+---
+
+## 2026-08-19: Fix Training-Serving Skew trong Recommendation
+
+### Triệu chứng
+- Xem Recommendations → Model khuyến nghị **BÁN** một mã
+- Chạy Backtest (1-2 cycles train)
+- Xem lại Recommendations → Model khuyến nghị **GIỮ** cùng mã đó
+- Inconsistency gây mất niềm tin vào model
+
+### Nguyên nhân gốc
+**Training-Serving Skew**: Training và Inference dùng normalization khác nhau:
+
+1. **Training (trước fix)**: Per-window normalize mỗi slice 60 ngày
+2. **Inference**: Per-window normalize chỉ trên lookback window hiện tại
+3. **Problem**: Window hiện tại có thể có range khác (outliers, volatility) → model nhận input scale khác → prediction khác
+
+Thêm vào đó, **model được update liên tục** khi training chạy, nên mỗi lần refresh recommendation có thể dùng model version khác.
+
+### Cách fix: Feature Scaling Consistency
+
+**Ý tưởng**: Fit **global scaler** trên toàn bộ training data, save params, inference dùng exact params đó.
+
+#### Files đã tạo/sửa
+
+| File | Thay đổi |
+|------|----------|
+| `engine/feature_scaler.py` | **Mới** - FeatureScaler class với fit/transform/save/load |
+| `engine/wf_trainer/sl_trainer.py` | Dùng global scaler thay vì per-window normalize |
+| `engine/wf_trainer/walk_forward.py` | Load existing scaler, pass vào train_supervised() |
+| `engine/recommendation_engine.py` | Load saved scaler, dùng khi inference |
+| `tests/unit/test_feature_scaler.py` | **Mới** - 34 unit tests |
+
+#### Flow mới
+
+```
+Training (mỗi cycle):
+1. build_sl_dataset() fit global scaler trên tất cả windows
+2. train_supervised() save scaler vào engine/models/scaler_params.json
+3. Model được train với features normalized theo global scaler
+
+Inference (Recommendations):
+1. _load_scaler() load params từ scaler_params.json (lazy, 1 lần)
+2. _normalize_features() dùng saved scaler transform window
+3. Model nhận input CÙNG scale như lúc train → prediction consistent
+```
+
+#### Fallback
+Nếu `scaler_params.json` chưa có (chưa train cycle nào):
+- Log warning
+- Dùng per-window normalize như trước
+- Sau khi train ít nhất 1 cycle → scaler có sẵn
+
+#### Scaler file format
+```json
+{
+  "min_vals": [0.1, 0.2, ...],  // 78 features
+  "max_vals": [100.5, 200.3, ...],
+  "num_features": 78,
+  "feature_names": ["open", "high", ...],
+  "fitted_at": "2026-08-19T10:30:00",
+  "num_samples": 50000,
+  "symbols_used": ["VNM", "FPT", "HPG", ...]
+}
+```
+
+### Cách phòng ngừa
+1. Luôn dùng **cùng normalization** giữa training và inference
+2. **Save scaler params** cùng với model checkpoint
+3. **Reload scaler** khi refresh recommendations
+4. Test với `test_consistency_across_sessions` để verify
+
+### Liên quan
+- Best practice: [ML Trading Backtesting Guide](https://www.tradealgo.com/trading-guides/ai-trading/machine-learning-backtesting-guide)
+- Concept: Training-Serving Skew, Feature Store

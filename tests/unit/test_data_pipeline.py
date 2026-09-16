@@ -183,18 +183,18 @@ class TestUpdateSymbol:
 
 
 class TestUpdateAll:
-    """Test update_all() batch processing với error isolation."""
+    """Test update_all() batch processing với fail-fast mode."""
 
     def test_returns_update_result(self, pipeline) -> None:
         """Trả về UpdateResult với thông tin batch."""
         result = pipeline.update_all()
         assert result.total_symbols > 0
-        assert result.success_count + len(result.failed_symbols) == result.total_symbols
+        assert result.success_count + len(result.failed_symbols) <= result.total_symbols
         assert result.duration_seconds >= 0.0
 
-    def test_error_isolation_continues_on_failure(self, tmp_path) -> None:
-        """Khi một symbol fail, batch vẫn tiếp tục chạy."""
-        # Tạo 1 CSV hợp lệ (FPT) và 1 invalid (BAD)
+    def test_fail_fast_stops_on_first_failure(self, tmp_path) -> None:
+        """Khi một symbol fail, batch dừng ngay (fail-fast mode)."""
+        # Tạo 1 CSV invalid (AAA - sẽ fail trước theo alphabet) và 1 valid (ZZZ)
         valid_df = pd.DataFrame({
             "time": ["2024-01-01"],
             "open": [100.0],
@@ -203,17 +203,39 @@ class TestUpdateAll:
             "close": [103.0],
             "volume": [1000],
         })
-        valid_df.to_csv(tmp_path / "FPT.csv", index=False)
-        pd.DataFrame({"x": [1]}).to_csv(tmp_path / "BAD.csv", index=False)
+        pd.DataFrame({"x": [1]}).to_csv(tmp_path / "AAA.csv", index=False)  # Invalid - fail đầu tiên
+        valid_df.to_csv(tmp_path / "ZZZ.csv", index=False)  # Valid - không được xử lý
 
-        # Chỉ track FPT và BAD
-        with patch("engine.data_pipeline.VN30_SYMBOLS", ["FPT", "BAD"]):
+        # Chỉ track AAA và ZZZ
+        with patch("engine.data_pipeline.VN30_SYMBOLS", ["AAA", "ZZZ"]):
             with patch("engine.data_pipeline.WATCHLIST_PATH", str(tmp_path / "none.txt")):
                 dp = DataPipeline(data_dir=str(tmp_path))
                 result = dp.update_all()
-                # FPT thành công, BAD thất bại
-                assert result.success_count == 1
-                assert "BAD" in result.failed_symbols
+                # AAA fail → dừng ngay, ZZZ không được xử lý
+                assert result.success_count == 0
+                assert "AAA" in result.failed_symbols
+                # Chỉ có 1 failed symbol vì dừng ngay
+                assert len(result.failed_symbols) == 1
+
+    def test_all_success_when_all_valid(self, tmp_path) -> None:
+        """Khi tất cả symbols hợp lệ, batch hoàn thành."""
+        valid_df = pd.DataFrame({
+            "time": ["2024-01-01"],
+            "open": [100.0],
+            "high": [105.0],
+            "low": [99.0],
+            "close": [103.0],
+            "volume": [1000],
+        })
+        valid_df.to_csv(tmp_path / "AAA.csv", index=False)
+        valid_df.to_csv(tmp_path / "BBB.csv", index=False)
+
+        with patch("engine.data_pipeline.VN30_SYMBOLS", ["AAA", "BBB"]):
+            with patch("engine.data_pipeline.WATCHLIST_PATH", str(tmp_path / "none.txt")):
+                dp = DataPipeline(data_dir=str(tmp_path))
+                result = dp.update_all()
+                assert result.success_count == 2
+                assert len(result.failed_symbols) == 0
 
     def test_callback_called_for_each_symbol(self, tmp_path) -> None:
         """Callback được gọi cho mỗi symbol với progress percent."""

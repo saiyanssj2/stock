@@ -2,12 +2,12 @@
 DataPipeline - Module fetch và validate market data cho trading platform.
 
 Quản lý việc cập nhật dữ liệu OHLCV cho tất cả tracked symbols (VN30 + watchlist).
-Hỗ trợ error isolation: nếu một symbol fail, batch vẫn tiếp tục chạy.
+Fail-fast mode: nếu một symbol fail, dừng ngay batch để không tốn thời gian retry vô ích.
+Mất mạng không ảnh hưởng tới việc train model (data cũ vẫn dùng được).
 
 References:
 - Req 8.1: One-click data update cho tất cả tracked symbols
 - Req 8.2: Validate data completeness (time, open, high, low, close, volume)
-- Req 8.4: Error isolation - skip failed symbols, continue batch
 """
 
 import math
@@ -155,47 +155,22 @@ class DataPipeline:
 
             fetch_end = str(date.today())
 
-            # Gọi API với retry
+            # Gọi API - fail fast, không retry (mất mạng không ảnh hưởng train)
             df_new = None
-            max_retries = 3
-            for attempt in range(max_retries + 1):
+            try:
+                q = Quote(symbol=symbol, source="VCI")
+                df_new = q.history(start=fetch_start, end=fetch_end, interval="1D")
+            except Exception as e:
+                # Log lỗi và return False ngay - không retry
+                _debug_path = os.path.join("pipeline_debug.log")
                 try:
-                    q = Quote(symbol=symbol, source="VCI")
-                    df_new = q.history(start=fetch_start, end=fetch_end, interval="1D")
-                    break
-                except Exception as e:
-                    err_msg = str(e).lower()
-                    # Log ra debug file
-                    _debug_path = os.path.join("pipeline_debug.log")
-                    try:
-                        with open(_debug_path, "a", encoding="utf-8") as _df:
-                            from datetime import datetime as _dtnow
-                            _df.write(f"[{_dtnow.now():%Y-%m-%d %H:%M:%S}]   [UPDATE] {symbol} attempt {attempt+1}/{max_retries+1} ERROR: {str(e)[:120]}\n")
-                    except Exception:
-                        pass
-
-                    if attempt < max_retries:
-                        if ("rate" in err_msg or "limit" in err_msg or "429" in err_msg
-                                or "giới hạn" in err_msg or "10054" in err_msg
-                                or "forcibly closed" in err_msg or "connection" in err_msg):
-                            # Parse thời gian chờ từ message nếu có (VD: "Chờ 13 giây")
-                            import re
-                            wait_match = re.search(r"chờ\s+(\d+)\s+giây", err_msg)
-                            if not wait_match:
-                                wait_match = re.search(r"wait\s+(\d+)", err_msg)
-                            wait_time = int(wait_match.group(1)) + 2 if wait_match else 45
-                            logger.info(f"[DataPipeline] Rate limit {symbol}, chờ {wait_time}s (attempt {attempt+1})")
-                            try:
-                                with open(_debug_path, "a", encoding="utf-8") as _df:
-                                    _df.write(f"[{_dtnow.now():%Y-%m-%d %H:%M:%S}]   [UPDATE] {symbol} → chờ {wait_time}s rồi retry...\n")
-                            except Exception:
-                                pass
-                            time.sleep(wait_time)
-                        else:
-                            time.sleep(5)
-                    else:
-                        logger.warning(f"[DataPipeline] Fetch {symbol} thất bại sau {max_retries+1} lần: {e}")
-                        return False
+                    with open(_debug_path, "a", encoding="utf-8") as _df:
+                        from datetime import datetime as _dtnow
+                        _df.write(f"[{_dtnow.now():%Y-%m-%d %H:%M:%S}]   [UPDATE] {symbol} FAIL: {str(e)[:120]}\n")
+                except Exception:
+                    pass
+                logger.warning(f"[DataPipeline] Fetch {symbol} thất bại: {e}")
+                return False
 
             if df_new is None or len(df_new) == 0:
                 logger.warning(f"[DataPipeline] {symbol}: không có dữ liệu mới")
@@ -245,10 +220,12 @@ class DataPipeline:
         should_stop: Optional[Callable[[], bool]] = None,
     ) -> UpdateResult:
         """
-        Cập nhật data cho tất cả tracked symbols với rate limiting và error isolation.
+        Cập nhật data cho tất cả tracked symbols với rate limiting.
 
-        Rate limit: nghỉ 3s giữa mỗi request, nghỉ 65s sau mỗi 18 requests
-        (giới hạn API: 20 requests/phút).
+        Fail-fast: test connection với 1 mã trước (FPT), nếu fail thì skip toàn bộ.
+        Mất mạng không ảnh hưởng train model - data cũ vẫn dùng được.
+
+        Rate limit: nghỉ 3s giữa mỗi request (giới hạn API: 20 requests/phút).
 
         Args:
             callback: Hàm callback(symbol, progress_pct) cho progress reporting.
@@ -257,6 +234,37 @@ class DataPipeline:
         Returns:
             UpdateResult chứa thống kê success/failure của batch
         """
+        start_time = time.time()
+
+        # === TEST CONNECTION TRƯỚC với 1 mã (FPT) ===
+        # Nếu fail → skip toàn bộ batch, không tốn thời gian load symbols
+        test_symbol = "FPT"
+        try:
+            from vnstock.api.quote import Quote
+            q = Quote(symbol=test_symbol, source="VCI")
+            # Chỉ fetch 1 ngày để test connection
+            from datetime import date, timedelta
+            test_end = str(date.today())
+            test_start = str(date.today() - timedelta(days=3))
+            _ = q.history(start=test_start, end=test_end, interval="1D")
+        except Exception as e:
+            # Connection fail → skip toàn bộ batch
+            try:
+                with open("pipeline_debug.log", "a", encoding="utf-8") as _df:
+                    from datetime import datetime as _dtnow
+                    _df.write(f"[{_dtnow.now():%Y-%m-%d %H:%M:%S}]   [UPDATE] CONNECTION TEST FAIL ({test_symbol}): {str(e)[:80]}\n")
+                    _df.write(f"[{_dtnow.now():%Y-%m-%d %H:%M:%S}]   [UPDATE] SKIP toàn bộ batch - dùng data cũ để train\n")
+            except Exception:
+                pass
+            return UpdateResult(
+                total_symbols=0,
+                success_count=0,
+                failed_symbols=[test_symbol],
+                errors={test_symbol: f"Connection test failed: {e}"},
+                duration_seconds=time.time() - start_time,
+            )
+
+        # === Connection OK → tiến hành update ===
         symbols = self.get_tracked_symbols()
         total = len(symbols)
 
@@ -264,11 +272,8 @@ class DataPipeline:
         failed_symbols: List[str] = []
         errors: dict = {}
 
-        start_time = time.time()
-
         # Rate limiting: 20 requests/phút = 1 request mỗi 3s
-        # Nghỉ 3.1s sau mỗi request để không bao giờ chạm limit
-        api_call_count = 0
+        api_call_count = 1  # Đã gọi 1 lần test connection
 
         for i, symbol in enumerate(symbols):
             # === Kiểm tra yêu cầu dừng ===
@@ -294,7 +299,6 @@ class DataPipeline:
                             target_date -= timedelta(days=1)
                         if last_date >= target_date:
                             # Chỉ skip nếu data đã có SAU target (ngày mai+)
-                            # last_date == target → vẫn gọi API (data có thể chưa final)
                             if last_date > target_date:
                                 needs_api = False
                 except Exception:
@@ -311,15 +315,28 @@ class DataPipeline:
                     if needs_api:
                         api_call_count += 1
                 else:
+                    # FAIL-FAST: dừng ngay khi có symbol đầu tiên fail
                     failed_symbols.append(symbol)
                     errors[symbol] = f"Update failed for {symbol}"
-                    if needs_api:
-                        api_call_count += 1
+                    # Log và dừng batch
+                    try:
+                        with open("pipeline_debug.log", "a", encoding="utf-8") as _df:
+                            from datetime import datetime as _dtnow
+                            _df.write(f"[{_dtnow.now():%Y-%m-%d %H:%M:%S}]   [UPDATE] STOPPED: {symbol} fail → dừng batch (data cũ vẫn dùng được)\n")
+                    except Exception:
+                        pass
+                    break
             except Exception as e:
+                # FAIL-FAST: dừng ngay khi có exception
                 failed_symbols.append(symbol)
                 errors[symbol] = str(e)
-                if needs_api:
-                    api_call_count += 1
+                try:
+                    with open("pipeline_debug.log", "a", encoding="utf-8") as _df:
+                        from datetime import datetime as _dtnow
+                        _df.write(f"[{_dtnow.now():%Y-%m-%d %H:%M:%S}]   [UPDATE] STOPPED: {symbol} exception → dừng batch\n")
+                except Exception:
+                    pass
+                break
 
             # Report progress qua callback
             if callback is not None:

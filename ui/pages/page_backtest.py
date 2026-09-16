@@ -395,22 +395,22 @@ def page_backtest() -> None:
                 step=100_000_000,
                 help="Vốn dùng để backtest",
             )
+            symbols = _get_symbols()
+            st.caption(f"🎯 {len(symbols)} mã: {', '.join(symbols[:10])}...")
+
+        with col2:
             start_date = st.date_input(
                 "📅 Ngày bắt đầu",
                 value=date.today() - timedelta(days=180),
             )
-
-        with col2:
             end_date = st.date_input(
                 "📅 Ngày kết thúc",
                 value=date.today(),
             )
-            symbols = _get_symbols()
-            st.caption(f"🎯 {len(symbols)} mã: {', '.join(symbols[:10])}...")
 
         st.caption("🇻🇳 Luật TTCK VN: T+3, ±7%, lô 100 cổ phiếu, phí 0.15%")
 
-        submitted = st.form_submit_button("🚀 Chạy Backtest", type="primary", width="stretch")
+        submitted = st.form_submit_button("🚀 Chạy Backtest", type="primary", use_container_width=True)
 
     if submitted:
         if start_date >= end_date:

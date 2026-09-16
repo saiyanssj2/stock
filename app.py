@@ -2,7 +2,6 @@
 Stock Trading Platform - Multi-page Streamlit Application.
 
 Router chính dùng st.navigation() để điều hướng giữa các pages.
-Status bar persistent ở top mọi page.
 Training chỉ chạy khi user nhấn Start trong trang Training.
 """
 import json
@@ -26,11 +25,6 @@ st.set_page_config(
     layout="wide",
     initial_sidebar_state="expanded",
 )
-
-from ui.components.status_bar import render_status_bar
-
-# Hiển thị status bar persistent ở top mọi page
-render_status_bar()
 
 # === Hiển thị trạng thái pipeline (nếu đang chạy) ===
 _status_file = Path("data/engine/status/auto_pipeline_status.json")
@@ -67,6 +61,7 @@ if _pipeline_running:
 # ==============================================================================
 pages = [
     st.Page("ui/pages/page_training.py", title="Training", icon="🧠", default=True),
+    st.Page("ui/pages/page_training_analytics.py", title="Analytics", icon="📊"),
     st.Page("ui/pages/page_backtest.py", title="Backtest", icon="📈"),
     st.Page("ui/pages/page_recommendations.py", title="Recommendations", icon="⭐"),
     st.Page("ui/pages/page_settings.py", title="Settings", icon="⚙️"),
